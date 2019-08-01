@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" promptOnRemoteOverwrite="CHECK_CONTENT" serverName="skandel@xrm.phys.northwestern.edu:22" uploadOnCheckin="108f4fc1-8592-4d17-9534-e0ae92589ae9" autoUploadExternalChanges="true">
+    <serverData>
+      <paths name="skandel@xrm.phys.northwestern.edu:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="ptychoSampling_v2" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myUploadOnCheckinName" value="skandel@xrm.phys.northwestern.edu:22" />
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>

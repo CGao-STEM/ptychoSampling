@@ -6,6 +6,8 @@ import numpy as np
 from typing import Tuple
 
 class PropagationTypes:
+    """Contains convenient flags.
+    """
     FARFIELD: int = 0
     TRANSFER_FUNCTION: int = 1
     IMPULSE_RESPONSE: int = 2
@@ -15,11 +17,56 @@ def checkPropagationType(support_npix: int,
                          wavelength: float,
                          prop_dist: float,
                          source_pixel_size: float) -> int:
-    fresnel_number = (support_npix * source_pixel_size)** 2 / (wavelength * prop_dist)
+    """Check the parameters to decide whether to use farfield, transfer function, or impulse response propagation.
+
+    Calculates the Fresnel number to decide whether to use nearfield or farfield propagation. Then,
+    for the near-field, we use the critical sampling criterion to decide whether to use the transfer function (TF)
+    method (if :math:`\Delta x > \lambda z/L`) or the impulse response (IR) method (if :math:`\Delta x < \lambda
+    z/L`) [1]_.
+
+    Notes
+    -----
+    Following [1]_, we calculate the Fresnel number :math:`F_N = L^2/\lambda z`, where :math:`L` is the source
+    support size, :math:`\lambda` is the wavelength, and :math:`z` is the propagation distance. If :math:`F_N < 0.1`,
+    we can safely use the Fraunhofer (far-field) method, otherwise we need to use one of the near-field methods.
+
+    To choose the near-field method, we follow the criterion in [1]_ (Pg. 79). Defining :math:`a = \lambda z/L`, we get:
+
+    * If :math:`\Delta x > a`, then the TF approach works well with some loss of observation plane support.
+    * If :math:`\Delta x = a`, then TF approach gives best use of bandwidth and spatial support.
+    * If :math:`\Delta x < a`, then IR approach with loss of available source bandwidth and artifacts.
+
+    Parameters
+    ----------
+    support_npix : int
+        Number of pixels in each side of the support.
+    wavelength : float
+        Wavelength of the source wavefront (in m).
+    prop_dist : float
+        Propagation distance (in m).
+    source_pixel_size : float
+        Pixel pitch (in m).
+
+    Returns
+    -------
+    out : int
+        Can have values of 0, 1, or 2, as defined in `PropagationTypes`.
+
+    See also
+    --------
+    PropagationTypes
+
+    References
+    ----------
+    .. [1] Voelz, D. "Computational Fourier Optics: A MATLAB Tutorial". doi:https://doi.org/10.1117/3.858456
+
+    """
+    source_support_size = support_npix * source_pixel_size
+    fresnel_number = source_support_size** 2 / (wavelength * prop_dist)
     print('Fresnel number is', fresnel_number)
     if fresnel_number < 0.1:
         return PropagationTypes.FARFIELD
-    if source_pixel_size > (wavelength * prop_dist):
+    if source_pixel_size >= wavelength * prop_dist / source_support_size:
         return PropagationTypes.TRANSFER_FUNCTION
     return PropagationTypes.IMPULSE_RESPONSE
 
@@ -29,6 +76,24 @@ def propagate(wavefront: np.ndarray,
               wavelength: float,
               prop_dist: float) -> Tuple[np.ndarray, float]:
     """Choose between Fraunhofer propagation, Transfer function propagation, and Impulse Response propagation.
+
+    Notes
+    -----
+    In typical references (e.g. [2]_), the propagation is scaled appropriately to propagate the *field* values at
+    the wavefront. For example, for a source wavefront :math:`U_{in}`, we can define the *irradiance*
+    :math:`I_{in} = |U_{in}|^2`, and the total optical power
+
+    .. math:: P_{in} = \sum_i^M\sum_j^N I_{in}\Delta x_{in} \Delta y_{in}
+
+    where :math:`(i,j)` index the pixels along the :math:`(x,y)` axes, and :math:`(\Delta x_{in}, \Delta y_{in})`
+    are the pixel sizes. After propagation, we obtain :math:`U_{out}, I_{out}, P_{out}` , the output wavefront,
+    irradiance and total optical power respectively. A typical propagation algorithm scales these quantities so that
+    :math:`P_{in}=P_{out}`, which means that we need to keep track of both the wavefront as well as the respective pixel
+    sizes.
+
+    Alternatively, we use wavefronts scaled so that :math:`\sum_i^M\sum_j^N I_{in} = \sum_i^M\sum_j^M I_{out}`. With
+    this scaling, we can directly use the orthonormalized fft without worrying about the additional scaling factors.
+    The algorithms implemented here use this approach.
 
     Parameters
     ----------
@@ -47,6 +112,10 @@ def propagate(wavefront: np.ndarray,
         Output array of the same shape as `wavefront`.
     new_pixel_size : float
         Pixel size after wavefront propagation. Only changes in the farfield case.
+
+    References
+    ----------
+    .. [2] Voelz, D. "Computational Fourier Optics: A MATLAB Tutorial". doi:https://doi.org/10.1117/3.858456
     """
 
     prop_fns = {PropagationTypes.FARFIELD: propFF,
@@ -65,8 +134,7 @@ def propIR(wavefront: np.ndarray,
            prop_dist: float) -> Tuple[np.ndarray, float]:
     """Propagation of the supplied wavefront using the Impulse Response function.
 
-    This function follows the convention of shifting array in real space before performing the
-    Fourier transform.
+    This function follows the convention of shifting array in real space before performing the Fourier transform.
 
     Parameters
     ----------
@@ -144,7 +212,7 @@ def propFF(wavefront: np.ndarray,
     # quadratic phase factor
     q = np.exp(1j * k /(2 * prop_dist) * (x**2 + y**2))
     out = q * np.fft.ifftshift(np.fft.fft2(np.fft.fftshift(wavefront), norm='ortho'))
-    return out, new_pixel_size
+    return out, rdx
 
 
 
