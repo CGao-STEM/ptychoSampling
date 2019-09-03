@@ -14,8 +14,6 @@ setup(
         "skimage",
         "matplotlib",
         "tensorflow-gpu",
-        "tqdm",
-        "autograd"
     ],
 )
 """

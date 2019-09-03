@@ -22,3 +22,12 @@
 3. If we do not remove the affine phase ambiguity this way, then we have to remove the phase ramp post-reconstruction, which is more difficult and error-prone. 
 4. For the far-field ptychography condition, by adding this border, we additionally ensure overlapping probe coverage through the entirety of the object (including the edges).
 5. We cannot use this approach for the Bragg ptychography case---while we get transmission through empty space, we do not get diffraction (at the Bragg angle) through empty space. As such, the bright field boundary condition does not apply.
+
+**Implementation notes**:
+
+1. As a default, the simulation code assumes that we can use Fraunhofer propagation for far-field propagation, and the 
+Fresnel Transfer Function method for the near-field propagation. While the *propagators.py* code also contains the impulse 
+response propagation method, it is not used anywhere else. The reconstruction code does not contain the impulse 
+response method.
+2. The far-field and near-field propagators need to be called explicitly. While *propagators.py* contains some checks
+ to determine the propagation type, this is experimental and is not used anywhere else.

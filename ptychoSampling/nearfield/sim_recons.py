@@ -51,8 +51,8 @@ plot_items = [np.abs(nfsim.obj_true),
               np.angle(nfsim.obj_true),
               np.abs(nfsim.probe_true),
               np.angle(nfsim.probe_true)]
-plot_titles = ['Object Mod', 
-               'Object Phase',
+plot_titles = ['Sample Mod',
+               'Sample Phase',
                'Probe Mod', 
                'Probe Phase']
 for indx, item in enumerate(plot_items):

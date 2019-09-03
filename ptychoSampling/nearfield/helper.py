@@ -1,117 +1,13 @@
 #Author - Saugat Kandel
 # coding: utf-8
 
-
 import numpy as np
-import scipy
-import skimage, skimage.transform, skimage.data
 from skimage.feature import register_translation
 from typing import Optional, Tuple
 import tensorflow as tf
 from pandas import DataFrame
 import dataclasses as dt
 import matplotlib.pyplot as plt
-
-
-
-def getRandomComplexArray(shape: Tuple[int,...],
-                          mod_range: float = 1.0,
-                          phase_range: float = np.pi) -> np.ndarray:
-    rands = np.random.random((2, *shape))
-    return rands[0] * mod_range * np.exp(1j * rands[1] * phase_range)
-
-
-
-def getSampleObj(npix: int = 256, 
-                 mod_range: float = 1, 
-                 phase_range: float = np.pi)-> np.ndarray:
-    r"""Creates a sample complex-valued object using stock data from the skimage library.
-    
-    Uses the stock camera image for the phase and the stock immunohistochemistry image (channel 0) for the modulus [1]_.
-    
-    Parameters
-    ----------
-    npix : int
-        Number of pixels in each axis of the object
-    mod_range : float 
-        Maximum value of the modulus for the object pixels.
-    phase_range : float
-        Maximum value of the phase for the object pixels.
-
-    Returns
-    -------
-    out : ndarray(complex)
-        A 2d array of shape npix x npix and dtype complex64.
-    
-    References
-    ----------
-    .. [1] https://scikit-image.org/docs/dev/api/skimage.data.html
-    """
-    
-    phase_img = skimage.img_as_float(skimage.data.camera())[::-1,::-1]
-    mod_img = skimage.img_as_float(skimage.data.immunohistochemistry()[:,:,0])[::-1,::-1]
-    mod = skimage.transform.resize(mod_img, [npix, npix], 
-                                   mode='wrap', preserve_range=True) 
-    phase = skimage.transform.resize(phase_img, [npix, npix],
-                                     mode='wrap', preserve_range=True)
-    
-    # Setting the ranges
-    phase = (phase - np.min(phase)) / (np.max(phase) - np.min(phase)) * phase_range
-    mod = (mod - np.min(mod)) / (np.max(mod) - np.min(mod)) * mod_range
-    
-    # Centering the phase at 0.
-    phase = np.angle(np.exp(1j * (phase - scipy.stats.circmean(phase))))
-    
-    obj = mod * np.exp(1j * phase)
-    return obj.astype('complex64')
-
-
-
-def getGaussian2D(npix: int, 
-                  stdev: Optional[float] = None,
-                  fwhm: Optional[float] = None) -> np.ndarray:
-    r"""Generates a circularly symmetric 2d gaussian pattern. 
-    
-    Ignoring the scaling constants, a circularly symmetric 2d gaussian can be calculated as:
-    
-    .. math:: g = \exp\left(-\frac{(x - c_x)^2 + (y - c_y)^2}{2 * stdev^2}\right)
-    
-    where :math:`(x,y)` are the coordinate indices, :math:`(c_x, c_y)` are the coordinates for the center of the
-    gaussian, and stdev is the standard deviation. In this function, we assume that :math:`c_x = c_y = npix // 2` (
-    i.e. the center of the gaussian is the center of the 2d array).
-    
-    Parameters
-    ----------
-    npix : int
-        Number of pixels in each axis of the probe
-    stdev : float, optional
-        Standard deviation of the gaussian. The function requires either the standard deviation or the fwhm. 
-    fwhm : float, optional
-        Full width at half maximum (FWHM) of the peak. The function requires either the standard deviation or the
-        fwhm. If we supply the fwhm, the standard deviation is calculated as :math:`stdev = fwhm / 2.35682`.
-    
-    Returns
-    -------
-    out : ndarray(float)
-        A 2d array of shape :math:`n_{pix}\times n_{pix}` and dtype `float32`.
-    """
-    
-    
-    if ((stdev is None) and (fwhm is None)) or ((stdev is not None) and (fwhm is not None)):
-        raise KeyError("Should input only one of either stdev or fwhm.")
-    if fwhm:
-        stdev = fwhm / 2.35682
-    
-    center = npix // 2
-    xvals = np.arange(npix)
-    XX, YY = np.meshgrid(xvals, xvals)
-    r_squared = (XX - center)**2 + (YY - center)**2
-    
-    # Ignoring the normalization constants
-    gaussian = np.exp(-r_squared/ (2 * stdev**2)) 
-    return gaussian.astype('float32')
-
-
 
 def getNFPropKernel(beam_shape: tuple, 
                     pixel_pitch: float, 
@@ -175,60 +71,6 @@ def getNFPropKernel(beam_shape: tuple,
     if fftshift: 
         H = np.fft.fftshift(H)
     return H.astype('complex64')
-
-
-
-def getSpeckle(npix: int, 
-               window_size: int) -> np.ndarray:
-    r"""Generates a speckle pattern. 
-    
-    To generate a speckle pattern, this function uses a ``window_size x window_size`` array of complex numbers with
-    unit amplitude and uniformly random phase. This array is padded with zeros to get an ``npix x npix`` array,
-    an FFT of which gives us a speckle pattern. The speckle pattern thus generated is discontinuous; there is a phase
-    step of pi between adjacent pixels in both the ``x`` and ``y`` directions. We remove these discontinuities to
-    get the final, continuous, speckle pattern.
-    
-    Parameters
-    ----------
-    npix : int
-        Number of pixels along each side of the 2d array containing the speckle pattern.
-    window_size : int 
-        The size of the rectangular window used to generate the speckle pattern. Larger window sizes give smaller
-        speckle sizes and vice versa.
-        (*Note*: I tried a circular window as well, but the results did not change noticeably.)
-    
-    Returns
-    --------
-    out : ndarray(complex)
-        A 2d array of size ``npix x npix`` and dtype complex64.
-    """
-    
-    if window_size > npix: 
-        raise ValueError("Window size should be smaller than the size of output array.")
-    
-    # generating the random array
-    ran = np.exp(1j * np.random.rand(npix,npix) * 2 * np.pi)
-    
-    window = np.zeros((npix, npix))
-    indx1 = npix // 2 - window_size // 2
-    indx2 = npix // 2 + window_size // 2
-    window[indx1: indx2, indx1: indx2] = 1
-    
-    # Circular window - doesn't change the results.
-    #xx, yy = np.meshgrid(np.arange(npix), np.arange(npix))
-    #mask = ((xx - npix // 2)**2 + (yy - npix // 2)**2 < (window_size // 2)**2)
-    #window[mask] = 1
-    
-    t = window * ran
-    
-    ft = np.fft.fftshift(np.fft.fft2(t, norm='ortho'))
-    absvals = np.abs(ft)
-    angvals = np.angle(ft)
-    
-    # Removing the discontinuities in the phases 
-    angvals[::2] = (angvals[::2] + np.pi) % (2 * np.pi)
-    angvals[:,::2] = (angvals[:, ::2] + np.pi) % (2 * np.pi)
-    return (absvals * np.exp(1j * angvals)).astype('complex64')
 
 @dt.dataclass(frozen=True)
 class ObjParams:
@@ -306,13 +148,13 @@ class DetectorParams:
     Parameters
     -----------
     obj_dist : float
-        Object-detector distance (in m).
-    pixel_pitch : float
+        Sample-detector distance (in m).
+    pixel_size : float
         Width of each individual pixel (in m). 
         
     Attributes
     ----------
-    obj_dist, pixel_pitch : see Parameters
+    obj_dist, pixel_size : see Parameters
     """
     obj_dist: float
     pixel_pitch: float
@@ -489,7 +331,7 @@ class NFPtychoSimulation(object):
     * If we want to use an object 1024 pixels wide, and with a wavelength of 1 nm, we use:
         ``nfsim = NFPtychoSimulation(probe_args={probe_npix:1024, wavelength:1e-9})``
     * If we want to use a detector with pixel pitch 100nm, we use:
-        ``nfsim = NFPtychoSimulation(detector_args={pixel_pitch:100e-9})``
+        ``nfsim = NFPtychoSimulation(detector_args={pixel_size:100e-9})``
     * If we want to use a step size of 60 pixels, and generate diffraction patterns without Poisson noise included,
         we use:
         ``nfsim = NFPtychoSimulation(scan_args={scan_step_npix:60, poisson_noise=False})``
