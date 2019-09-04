@@ -5,14 +5,19 @@ import tensorflow as tf
 import dataclasses as dt
 from skimage.feature import register_translation
 
+
 @dt.dataclass
-class DataItem:
+class SimpleMetric:
     title: str
-    test_t: tf.Tensor
-    log_freq: int
+
+
+@dt.dataclass
+class CustomTensorMetric(SimpleMetric):
+    tensor: tf.Tensor
+    log_epoch_frequency: int
     registration: bool = False
     true: np.ndarray = None
-    columns: list = dt.field(default_factory=list, init=False) # not using this for now
+    columns: list = dt.field(default_factory=list, init=False)  # not in use right now
 
     def __post_init__(self):
         if self.registration and self.true is None:
@@ -22,31 +27,28 @@ class DataItem:
         if not self.registration:
             self.columns = [self.title]
         else:
-            appends = ['_err']#, '_shift', '_phase']
+            appends = ['_err']  # , '_shift', '_phase']
             self.columns = [self.title + string for string in appends]
 
 
-
 class DataLogs:
-    def __init__(self, global_print_freq: int = 100,
-                 save_name: str = "",
-                 save_update_freq: int=100):
-        self._global_print_freq = global_print_freq
+    def __init__(self, save_name: str = "", save_update_freq: int=100):
         self._save_name = save_name
         self._save_update_freq = save_update_freq
         self._datalog_items = []
 
 
-    def addRegistration(self, title: str,
-                         test_t: tf.Tensor,
-                         true: np.ndarray,
-                         log_freq: int):
-        self._datalog_items.append(DataItem(title, test_t=test_t, log_freq=log_freq,
-                                            registration=True, true=true))
+    def addSimpleMetric(self, title: str):
+        self._datalog_items.append(SimpleMetric(title))
 
-    def addTensorLog(self, title, tensor, log_freq):
-        self._datalog_items.append(DataItem(title, test_t=tensor, log_freq=log_freq))
-        pass
+
+    def addCustomTensorMetric(self, title: str,
+                              tensor: tf.Tensor,
+                              log_epoch_frequency,
+                              **kwargs):
+
+        self._datalog_items.append(CustomTensorMetric(title, tensor, log_epoch_frequency, **kwargs))
+
 
     @staticmethod
     def _register(test: np.ndarray,
@@ -55,48 +57,32 @@ class DataLogs:
         shift, err, phase = register_translation(test * np.exp(-1j * phase), true, upsample_factor=10)
         return err
 
-
-    def getStepTensors(self, global_step):
-        self._this_step_out_items = []
+    def _getItemFromTitle(self, key: str):
         for item in self._datalog_items:
-            if global_step % item.log_freq:
-                self._this_step_out_items.append(item)
-        out_tensors = [item.test_t for item in self._this_step_out_items]
-        return out_tensors
+            if item.title == key:
+                return item
 
-    def logStep(self, log_values, global_step):
-        #out_items = []
-        #for item in self._datalog_items:
-        #    if global_step % item.log_freq:
-        #        out_items.append(item)
-        #out_ops = [item.test_t for item in out_items]
-        #outs = self._session_t.run(out_ops)
-        for i, outval in enumerate(log_values):
-            if self._this_step_out_items[i].registration:
-                out_float = self._register(outval, self._this_step_out_items[i].true)
+    def getCustomTensorMetrics(self, epoch):
+        tensors = {}
+        for item in self._datalog_items:
+            if isinstance(item, CustomTensorMetric):
+                if epoch % item.log_epoch_frequency == 0:
+                    tensors[item.title] = item.tensor
+        return tensors
+
+    def logStep(self, step, log_values_this_step: dict):
+        for key in log_values_this_step:
+            item = self._getItemFromTitle(key)
+            if item.registration:
+                value = self._register(log_values_this_step[key], item.true)
             else:
-                out_float = outval
-            self.dataframe[global_step, self._this_step_out_items[i].title] = out_float
+                value = log_values_this_step[key]
+            self.dataframe.loc[step, key] = value
 
-        self._addToDataframe(log_values, global_step)
-        if self._global_print_freq > 0 and (global_step % self._global_print_freq == 0):
-            self._addToPrint()
+    def printDebugOutput(self, epoch):
+        header = True if epoch==1 else False
+        print(self.dataframe.iloc[-1].to_string(float_format="10.3g", header=header))
 
-
-    def _addToDataframe(self, log_values, global_step):
-        for i, outval in enumerate(log_values):
-            if self._this_step_out_items[i].registration:
-                out_float = self._register(outval, self._this_step_out_items[i].true)
-            else:
-                out_float = outval
-            self.dataframe[global_step, self._this_step_out_items[i].title] = out_float
-
-    def _addToPrint(self):
-        if not hasattr(self, "_print_str"):
-            self._print_str = self.dataframe.iloc[-1].to_string(float_format="%10.3g", header=True)
-        else:
-            self._print_str = self.dataframe.iloc[-1].to_string(float_format="%10.3g", header=False)
-        print(self._print_str)
 
     def finalize(self):
         columns = []
@@ -112,7 +98,7 @@ class DataLogs:
                                + "The log file remains unchanged. Only the print output is affected.")
             logger.warning(e)
 
-    #def _saveCheckpoint(self, global_step):
+    #def _saveCheckpoint(self, iteration):
     #    if not hasattr(self, "_name"):
     #        self._name = self._checkpoint_name + ".csv"
     #        self.dataframe.to_csv(self._name, sep="\t", header=True, float_format=)

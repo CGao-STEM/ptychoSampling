@@ -10,7 +10,7 @@ from ptychoSampling.logger import logger
 @dt.dataclass
 class ObjParams:
     shape: Tuple = (192, 192) # y, x
-    border_shape: Any = 32
+    border_shape: Any = ((32, 32),(32, 32))
     border_const: float = 1.0
 
 @dt.dataclass

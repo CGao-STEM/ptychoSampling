@@ -34,9 +34,9 @@ def fftshift_t(t: tf.Tensor,
     """
     with tf.name_scope(name, "fftshift") as name:
         if isinstance(axes, int):
-            shift = int(t._shape_tuple[axes] // 2)
+            shift = int(t._shape_tuple()[axes] // 2)
         else:
-            shift = [int((t._shape_tuple[ax]) // 2) for ax in axes]
+            shift = [int((t._shape_tuple()[ax]) // 2) for ax in axes]
 
         return tf.roll(t, shift, axes, name)
 
@@ -70,14 +70,14 @@ def ifftshift_t(t: tf.Tensor, axes=(-1,-2), name=None):
     """
     with tf.python.ops.name_scope(name, "fftshift") as name:
         if isinstance(axes, int):
-            shift = -int(t._shape_tuple[axes] // 2)
+            shift = -int(t._shape_tuple()[axes] // 2)
         else:
-            shift = [-int((t._shape_tuple[ax]) // 2) for ax in axes]
+            shift = [-int((t._shape_tuple()[ax]) // 2) for ax in axes]
         return tf.roll(t, shift, axes, name)
 
 def fft2_t(t: tf.Tensor):
     shape = t._shape_tuple()
-    norm = tf.sqrt(shape[-1] * shape[-2])
+    norm = tf.sqrt(tf.cast(shape[-1] * shape[-2], 'complex64'))
     return tf.fft2d(t) / tf.cast(norm, 'complex64')
 
 def ifft2_t(t: tf.Tensor):
@@ -124,8 +124,8 @@ def propFF_t(t: tf.Tensor,
     """
 
     new_pixel_size = None
-    ny = t._shape_tuple[-2]
-    nx = t._shape_tuple[-1]
+    ny = t._shape_tuple()[-2]
+    nx = t._shape_tuple()[-1]
 
     if None not in [prop_dist, wavelength, pixel_size]:
         new_pixel_size = (wavelength * prop_dist / (nx * pixel_size[0]),
@@ -192,8 +192,8 @@ def propTF_t(t: tf.Tensor,
     if transfer_function is None:
         transfer_function = tf.zeros_like(t, dtype='complex64')
     if not reuse_transfer_function:
-        nx = t._shape_tuple[-1]
-        ny = t._shape_tuple[-2]
+        nx = t._shape_tuple()[-1]
+        ny = t._shape_tuple()[-2]
 
         k = 2 * np.pi / wavelength
 

@@ -610,7 +610,7 @@ class ReconsLossAndOptimizers:
     ----------
     batch_loss_t : tensor(float)
         Tensor that calculates/stores the training loss value per minibatch.
-    validation_loss_t : tensor(float)
+    _validation_loss_t : tensor(float)
         If the dataset is split up into training/validation, then this parameter calculates/stores the validation
         loss. Should be set to zero otherwise.
     obj_learning_rate : float

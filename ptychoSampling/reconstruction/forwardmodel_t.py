@@ -50,7 +50,7 @@ class ForwardModelT(abc.ABC):
 
 
 class FarfieldForwardModelT(ForwardModelT):
-    def __init__(self, obj, probe, scan_positions_pix, upsampling_factor):
+    def __init__(self, obj, probe, scan_positions_pix, upsampling_factor=1):
 
         super().__init__(obj, probe, scan_positions_pix, upsampling_factor)
 
