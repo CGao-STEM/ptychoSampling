@@ -1,12 +1,12 @@
-from ptychoSampling.reconstruction.forwardmodel_t import FarfieldForwardModelT
-from ptychoSampling.reconstruction.lossfn_t import least_squared_loss_t
-from ptychoSampling.reconstruction.optimization import Optimizer, AdamOptimizer
+import ptychoSampling.reconstruction.forwardmodel_t
+import ptychoSampling.reconstruction.lossfn_t
+import ptychoSampling.reconstruction.optimization
 
 OPTIONS = {"forward models":
-               {"farfield": FarfieldForwardModelT},
+               {"farfield": ptychoSampling.reconstruction.forwardmodel_t.FarfieldForwardModelT},
 
            "loss functions":
-               {"least_squared": least_squared_loss_t},
+               {"least_squared": ptychoSampling.reconstruction.lossfn_t.least_squared_loss_t},
 
-           "optimizers": {"adam": AdamOptimizer,
-                          "custom": Optimizer}}
+           "optimization_methods": {"adam": ptychoSampling.reconstruction.optimization.getAdamOptimizer,
+                                    "custom": ptychoSampling.reconstruction.optimization.getOptimizer}}

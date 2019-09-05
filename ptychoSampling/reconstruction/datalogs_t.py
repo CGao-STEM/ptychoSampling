@@ -73,15 +73,14 @@ class DataLogs:
     def logStep(self, step, log_values_this_step: dict):
         for key in log_values_this_step:
             item = self._getItemFromTitle(key)
-            if item.registration:
+            if getattr(item, "registration", False):
                 value = self._register(log_values_this_step[key], item.true)
             else:
                 value = log_values_this_step[key]
             self.dataframe.loc[step, key] = value
 
-    def printDebugOutput(self, epoch):
-        header = True if epoch==1 else False
-        print(self.dataframe.iloc[-1].to_string(float_format="10.3g", header=header))
+    def printDebugOutput(self, header=False):
+        print(self.dataframe.iloc[-1:].to_string(float_format="%10.3g", header=header))
 
 
     def finalize(self):

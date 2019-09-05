@@ -4,7 +4,7 @@ import abc
 from typing import Callable, List, Union, Any
 from ptychoSampling.obj import Obj
 from ptychoSampling.probe import Probe
-from ptychoSampling.reconstruction.wavefront_t import propFF_t
+from ptychoSampling.reconstruction.wavefront_t import propFF_t, fftshift_t
 from ptychoSampling.grid import ScanGrid
 
 class ForwardModelT(abc.ABC):
@@ -28,7 +28,8 @@ class ForwardModelT(abc.ABC):
     def _addRealVariable(self, init: Union[float, np.ndarray],
                            name: str,
                            dtype: str='float32'):
-        var = tf.Variable(init, dtype=dtype, name=name)
+        with tf.device("/gpu:0"):
+            var = tf.Variable(init, dtype=dtype, name=name)
         self.model_vars[name] = {"variable": var,
                                  "output": var}
         return var
@@ -68,6 +69,7 @@ class FarfieldForwardModelT(ForwardModelT):
             return tf.zeros(shape=[], dtype='float32')
 
         batch_obj_views_t = tf.gather(self._obj_views_all_t, position_indices_t)
+        batch_obj_views_t = fftshift_t(batch_obj_views_t)
         exit_waves_t = batch_obj_views_t * self.probe_cmplx_t
         out_wavefronts_t = propFF_t(exit_waves_t)
         guess_diffs_t = tf.abs(out_wavefronts_t) ** 2
@@ -113,6 +115,7 @@ class FarfieldForwardModelT(ForwardModelT):
         ony, onx = obj.bordered_array.shape
         for px, py in scan_positions_pix:
             R, C = np.ogrid[py:ny + py, px:nx + px]
-            view_single = (R % nx) * ny + (C % nx)
+            view_single = (R % ony) * onx + (C % onx)
             views_indices_all.append(view_single)
+
         return np.array(views_indices_all)

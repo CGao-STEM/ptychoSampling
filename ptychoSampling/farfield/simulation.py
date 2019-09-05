@@ -112,15 +112,15 @@ class Simulation:
                 spx, spy = self.scan_grid.subpixel_scan[i]
                 phase_factor = (-2 * np.pi * (u * spx + u[:,None] * spy) / self.probe.shape[0])
                 phase_ramp = np.complex(np.cos(phase_factor), np.sin(phase_factor))
-                wv = (wv.fft2() * phase_ramp).ifft2()
+                wv = (self.probe.wavefront.fft2() * phase_ramp).ifft2()
                 #wv = np.fft.ifft2(np.fft.fft2(wv, norm='ortho') * phase_ramp, norm='ortho')
 
             obj_slice = np.fft.fftshift(self.obj.bordered_array[py: py + self.probe.shape[0],
                                         px: px + self.probe.shape[0]])
-            wv = wv * obj_slice
+            wv_out = wv * obj_slice
             #det_wave = np.fft.fft2(wv, norm='ortho')
             #intensity = np.abs(det_wave)**2
-            intensities = wv.fft2().intensities
+            intensities = wv_out.fft2().intensities
             intensities_all.append(intensities)
 
         self.intensities = np.random.poisson(intensities_all) if self.poisson_noise else np.array(intensities_all)

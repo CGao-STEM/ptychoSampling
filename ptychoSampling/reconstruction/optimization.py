@@ -1,23 +1,14 @@
 import tensorflow as tf
 import dataclasses as dt
 
-@dt.dataclass
-class Optimizer:
+
+def getOptimizer(optimizer_class: tf.train.Optimizer,
+                 **optimizer_kwargs):
     """Does not currently support optimizers that are not subclassed from tf.train.Optimizer"""
-    optimizer: tf.train.Optimizer
-    optimizer_args: dict = dt.field(default_factory=dict)
-    _default_optimizer_args: dict = dt.field(default_factory=dict, init=False)
+    return optimizer_class(**optimizer_kwargs)
 
-    def __post_init__(self):
-        for key in self._default_optimizer_args:
-            if key not in self.optimizer_args:
-                self.optimizer_args[key] = self._default_optimizer_args[key]
-
-class AdamOptimizer(Optimizer):
-    optimizer: tf.train.Optimizer = tf.train.AdamOptimizer
-    optimizer_args: dict = dt.field(default_factory=dict)
-    _default_optimizer_args: dict = dt.field(default={'learning_rate': 1e-2}, init=False)
-
+def getAdamOptimizer(learning_rate=1e-2, **optimizer_kwargs):
+    return getOptimizer(tf.train.AdamOptimizer, learning_rate=learning_rate, **optimizer_kwargs)
 
 
 

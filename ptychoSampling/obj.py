@@ -89,14 +89,16 @@ class Obj(abc.ABC):
         values : array_like, optional
             Obj array values. For the default value 'None', the function creates an array of zeros.
         """
+
         if values is None:
             try:
-                self.array = np.zeros(self.shape)
+                values = np.zeros(self.shape)
             except Exception as e:
                 e2 = ValueError("Error in input obj shape.")
                 logger.error([e, e2])
                 raise e2 from e
 
+        self.array = values
         try:
             self.bordered_array = np.pad(self.array,
                                          self.border_shape,

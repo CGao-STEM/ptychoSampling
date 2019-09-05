@@ -9,6 +9,7 @@ from ptychoSampling.logger import logger
 from ptychoSampling.reconstruction.forwardmodel_t import  FarfieldForwardModelT
 import ptychoSampling.reconstruction.options
 from ptychoSampling.reconstruction.datalogs_t import DataLogs
+import copy
 
 class ReconstructionT(abc.ABC):
     r"""
@@ -20,10 +21,10 @@ class ReconstructionT(abc.ABC):
                  intensities: np.ndarray,
                  n_validation: int = 0,
                  batch_size: int = 0):
-        self.obj = obj
-        self.probe = probe
-        self.grid = grid
-        self.intensities = intensities
+        self.obj = copy.deepcopy(obj)
+        self.probe = copy.deepcopy(probe)
+        self.grid = copy.deepcopy(grid)
+        self.intensities = copy.deepcopy(intensities)
 
         self.n_all = self.intensities.shape[0]
         self.n_validation = n_validation
@@ -32,9 +33,12 @@ class ReconstructionT(abc.ABC):
 
         self.graph = tf.Graph()
         with self.graph.as_default():
-            self._intensities_t = tf.constant(intensities, dtype=tf.float32)
+            with tf.device("/gpu:0"):
+                self._intensities_t = tf.constant(intensities, dtype=tf.float32)
+            logger.info('creating batches...')
             self._createDataBatches()
 
+        logger.info('creating log...')
         self.iteration = 0
         self.datalog = DataLogs()
         self._default_log_items = {"epoch": None,
@@ -67,20 +71,21 @@ class ReconstructionT(abc.ABC):
         self._loss_type = loss_type
         self._amplitude_loss = amplitude_loss
 
+        power = 0.5 if amplitude_loss else 1.0
+
         with self.graph.as_default():
-            self._batch_train_predictions_t = self.fwd_model.predict(self._batch_train_input_v)
-            self._batch_validation_predictions_t = self.fwd_model.predict(self._batch_validation_input_v)
+            self._batch_train_predictions_t = self.fwd_model.predict(self._batch_train_input_v) ** power
+            self._batch_validation_predictions_t = self.fwd_model.predict(self._batch_validation_input_v) ** power
 
-            self._batch_train_data_t = tf.gather(self._intensities_t, self._batch_train_input_v)
-            self._batch_validation_data_t = tf.gather(self._intensities_t, self._batch_validation_input_v)
+            self._batch_train_data_t = tf.gather(self._intensities_t, self._batch_train_input_v) ** power
+            self._batch_validation_data_t = tf.gather(self._intensities_t, self._batch_validation_input_v) ** power
 
-            if amplitude_loss:
-                for t in [self._batch_train_predictions_t,
-                          self._batch_validation_predictions_t,
-                          self._batch_train_data_t,
-                          self._batch_validation_data_t]:
-                    print(t)
-                    t = tf.sqrt(t)
+            #if amplitude_loss:
+            #    for t in [self._batch_train_predictions_t,
+            #              self._batch_validation_predictions_t,
+            #              self._batch_train_data_t,
+            #              self._batch_validation_data_t]:
+            #       t = tf.sqrt(t)
 
             self._train_loss_t = losses_all[loss_type](self._batch_train_predictions_t, self._batch_train_data_t)
             self._validation_loss_t = losses_all[loss_type](self._batch_validation_predictions_t,
@@ -118,14 +123,14 @@ class ReconstructionT(abc.ABC):
             logger.error(e)
             raise e
 
-        optimizers_all = ptychoSampling.reconstruction.options.OPTIONS["optimizers"]
-        self._checkAttr("_train_loss_t", "optimizers")
-        self._checkConfigProperty(optimizers_all, optimizer_type)
+        optimization_all = ptychoSampling.reconstruction.options.OPTIONS["optimization_methods"]
+        self._checkAttr("_train_loss_t", "optimizer")
+        self._checkConfigProperty(optimization_all, optimizer_type)
 
         if not hasattr(self, "optimizers"):
             self.optimizers = []
         with self.graph.as_default():
-            optimizer = optimizers_all[optimizer_type].optimizer(optimizer_args)
+            optimizer = optimization_all[optimizer_type](**optimizer_args)
             minimize_op = optimizer.minimize(self._train_loss_t,
                                              var_list=[self.fwd_model.model_vars[variable_name]["variable"]])
         self.optimizers.append({"var": variable_name,
@@ -231,15 +236,17 @@ class ReconstructionT(abc.ABC):
     def finalizeSetup(self):
         self._checkAttr("optimizers", "finalize")
         self.datalog.finalize()
-        self.session = tf.Session(graph=self.graph)
-        self.session.run(tf.global_variables_initializer())
+        with self.graph.as_default():
+            config = tf.ConfigProto()
+            config.gpu_options.allow_growth = True
+            self.session = tf.Session(config=config)
+            self.session.run(tf.global_variables_initializer())
 
-    def _printDebugOutput(self, debug_output, debug_output_epoch_frequency, epoch):
-        if not debug_output:
-            return
+    def _printDebugOutput(self, debug_output_epoch_frequency, epoch, print_debug_header):
         if not epoch % debug_output_epoch_frequency == 0:
-            return
-        self.datalog.printDebugOutput(epoch)
+            return print_debug_header
+        self.datalog.printDebugOutput(print_debug_header)
+        return False
 
     def run(self, max_iterations: int = 5000,
             validation_epoch_frequency: int = 1,
@@ -294,7 +301,9 @@ class ReconstructionT(abc.ABC):
         if not hasattr(self, "session"):
             self.finalizeSetup()
 
-        epochs_this_run = 0
+        print_debug_header = True
+
+        epochs_start = self.epoch
         for i in range(max_iterations):
             self.iteration += 1
             self.session.run(self._new_train_batch_op)
@@ -309,11 +318,14 @@ class ReconstructionT(abc.ABC):
             self._default_log_items["train_loss"] = outs[0]
             self.datalog.logStep(self.iteration, self._default_log_items)
 
-            epoch_complete = (i % self._iterations_per_epoch == 0)
-            if not epoch_complete:
+            #epoch_complete = (i % self._iterations_per_epoch == 0)
+            #if not epoch_complete:
+            #    continue
+            if i % self._iterations_per_epoch != 0:
                 continue
-            epochs_this_run += 1
 
+            #epochs_this_run += 1 if i > 0 else 0
+            epochs_this_run = self.epoch - epochs_start
             custom_metrics = self.datalog.getCustomTensorMetrics(epochs_this_run)
             custom_metrics_tensors = list(custom_metrics.values())
             if len(custom_metrics_tensors) > 0:
@@ -321,13 +333,16 @@ class ReconstructionT(abc.ABC):
                 self.datalog.logStep(self.iteration, dict(zip(custom_metrics.keys(), custom_metrics_values)))
 
             if self.n_validation == 0 or self.epoch % validation_epoch_frequency != 0:
-                self._printDebugOutput(debug_output, debug_output_epoch_frequency, epochs_this_run)
+                if debug_output:
+                    print_debug_header = self._printDebugOutput(debug_output_epoch_frequency,
+                                                                epochs_this_run,
+                                                                print_debug_header)
                 continue
 
             self.session.run(self._new_validation_batch_op)
             v = self.session.run(self._validation_loss_t)
-            v_min = np.inf if self.iteration == 0 else self._validation_log_items["validation_min"]
 
+            v_min = np.inf if self.iteration == 1 else self._validation_log_items["validation_min"]
             if v < v_min:
                 if np.abs(v - v_min) > v_min * improvement_threshold:
                     patience_epoch = max(patience_epoch, epochs_this_run * patience_increase_factor)
@@ -338,7 +353,10 @@ class ReconstructionT(abc.ABC):
             self._validation_log_items["patience"] = patience_epoch
             self.datalog.logStep(self.iteration, self._validation_log_items)
 
-            self._printDebugOutput(debug_output, debug_output_epoch_frequency, epochs_this_run)
+            if debug_output:
+                print_debug_header = self._printDebugOutput(debug_output_epoch_frequency,
+                                                            epochs_this_run,
+                                                            print_debug_header)
             if epochs_this_run >= patience_epoch:
                 break
         self._updateOutputs()
@@ -354,6 +372,7 @@ class ReconstructionT(abc.ABC):
 
 class FarFieldGaussianReconstructionT(ReconstructionT):
     def __init__(self, *args, **kwargs):
+        logger.info('initializing...')
         super().__init__(*args, **kwargs)
 
         logger.info('attaching fwd model...')

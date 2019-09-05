@@ -38,7 +38,7 @@ def fftshift_t(t: tf.Tensor,
         else:
             shift = [int((t._shape_tuple()[ax]) // 2) for ax in axes]
 
-        return tf.roll(t, shift, axes, name)
+        return tf.roll(t, shift, axes)
 
 
 def ifftshift_t(t: tf.Tensor, axes=(-1,-2), name=None):
@@ -73,7 +73,7 @@ def ifftshift_t(t: tf.Tensor, axes=(-1,-2), name=None):
             shift = -int(t._shape_tuple()[axes] // 2)
         else:
             shift = [-int((t._shape_tuple()[ax]) // 2) for ax in axes]
-        return tf.roll(t, shift, axes, name)
+        return tf.roll(t, shift, axes)
 
 def fft2_t(t: tf.Tensor):
     shape = t._shape_tuple()
