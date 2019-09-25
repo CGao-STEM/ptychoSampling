@@ -3,8 +3,8 @@ import numpy as np
 from ptychoSampling.logger import logger
 import tensorflow as tf
 import dataclasses as dt
-from skimage.feature import register_translation
-
+from skimage.feature import register_translation as _register_translation_2d
+from ptychoSampling.utils.register_translation_3d import register_translation_3d as _register_translation_3d
 
 @dt.dataclass
 class SimpleMetric:
@@ -47,14 +47,25 @@ class DataLogs:
                               log_epoch_frequency,
                               **kwargs):
 
-        self._datalog_items.append(CustomTensorMetric(title, tensor, log_epoch_frequency, **kwargs))
+        self._datalog_items.append(CustomTensorMetric(title=title,
+                                                      tensor=tensor,
+                                                      log_epoch_frequency=log_epoch_frequency,
+                                                      **kwargs))
 
 
     @staticmethod
     def _register(test: np.ndarray,
                   true: np.ndarray) -> float:
-        shift, err, phase = register_translation(test, true, upsample_factor=10)
-        shift, err, phase = register_translation(test * np.exp(-1j * phase), true, upsample_factor=10)
+        if len(test.shape) == 2:
+            registration_fn = _register_translation_2d
+        elif len(test.shape) == 3:
+            registration_fn = _register_translation_3d
+        else:
+            e = ValueError("Subpixel registration only available for 2d and 3d objects.")
+            logger.error(e)
+            raise e
+        shift, err, phase = registration_fn(test, true, upsample_factor=10)
+        shift, err, phase = registration_fn(test * np.exp(-1j * phase), true, upsample_factor=10)
         return err
 
     def _getItemFromTitle(self, key: str):

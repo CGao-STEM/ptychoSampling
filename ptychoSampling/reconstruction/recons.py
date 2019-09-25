@@ -3,15 +3,13 @@ import abc
 import tensorflow as tf
 import ptychoSampling.probe
 import ptychoSampling.obj
-#import ptychoSampling.ptycho
 import ptychoSampling.grid
 from ptychoSampling.logger import logger
-from ptychoSampling.reconstruction.forwardmodel_t import  FarfieldForwardModelT
 import ptychoSampling.reconstruction.options
 from ptychoSampling.reconstruction.datalogs_t import DataLogs
 import copy
 
-class ReconstructionT(abc.ABC):
+class ReconstructionT:
     r"""
     """
 
@@ -55,13 +53,13 @@ class ReconstructionT(abc.ABC):
                 self.datalog.addSimpleMetric(key)
 
 
-    def attachForwardModel(self, model_type: str, **kwargs: dict):
+    def attachForwardModel(self, model_type: str, **kwargs: float):
         models_all =  ptychoSampling.reconstruction.options.OPTIONS["forward models"]
         self._checkConfigProperty(models_all, model_type)
         self._model_type = model_type
 
         with self.graph.as_default():
-            self.fwd_model = models_all[model_type](self.obj, self.probe, self.grid.positions_pix, **kwargs)
+            self.fwd_model = models_all[model_type](self.obj, self.probe, self.grid, **kwargs)
 
     def attachLossFunction(self, loss_type: str, amplitude_loss: bool = True):
         losses_all = ptychoSampling.reconstruction.options.OPTIONS["loss functions"]
@@ -99,23 +97,23 @@ class ReconstructionT(abc.ABC):
                                    update_frequency: int = 1,
                                    checkpoint_frequency: int = 100):
         """
-               Set up the training and validation loss functions and the probe and object optimization procedure.
+       Set up the training and validation loss functions and the probe and object optimization procedure.
 
-               For the training data, we use the loss value for the current minibatch of scan positions. We then try to
-               minimize this loss value by using the Adam optimizer for the object (and probe) variables.
+       For the training data, we use the loss value for the current minibatch of scan positions. We then try to
+       minimize this loss value by using the Adam optimizer for the object (and probe) variables.
 
-               For the validation data, we use the entire validation data set to calculate the loss value. We do not use
-               this for the gradient calculations.
+       For the validation data, we use the entire validation data set to calculate the loss value. We do not use
+       this for the gradient calculations.
 
-               For now, we use the amplitude loss function.
+       For now, we use the amplitude loss function.
 
-               Parameters
-               ----------
-               obj_learning_rate : float
-                   Learning rate (or initial step size) for the Adam optimizer for the object variable. Defaults to 0.01.
-               probe_learning_rate : float
-                   Learning rate (or initial step size) for the Adam optimizer for the probe variable. Only applies we
-                   enable probe reconstruction. Defaults to 10.
+       Parameters
+       ----------
+       obj_learning_rate : float
+           Learning rate (or initial step size) for the Adam optimizer for the object variable. Defaults to 0.01.
+       probe_learning_rate : float
+           Learning rate (or initial step size) for the Adam optimizer for the probe variable. Only applies we
+           enable probe reconstruction. Defaults to 10.
         """
         self._checkAttr("fwd_model", "optimizers")
         if variable_name not in self.fwd_model.model_vars:
@@ -157,39 +155,39 @@ class ReconstructionT(abc.ABC):
     def _createDataBatches(self):
         """Use TensorFlow Datasets to create minibatches.
 
-                When the diffraction data set is small enough to easily fit in the GPU memory, we can use the minibatch
-                strategy detailed here to avoid I/O bottlenecks. For larger datasets, we have to adopt a slightly different
-                minibatching strategy. More information about minibatches vs timing will be added later on in jupyter notebooks.
+        When the diffraction data set is small enough to easily fit in the GPU memory, we can use the minibatch
+        strategy detailed here to avoid I/O bottlenecks. For larger datasets, we have to adopt a slightly different
+        minibatching strategy. More information about minibatches vs timing will be added later on in jupyter notebooks.
 
-                In the scenario that the dataset fits into the GPU memory (which we shall assume as a given from now on),
-                we can adopt the strategy:
+        In the scenario that the dataset fits into the GPU memory (which we shall assume as a given from now on),
+        we can adopt the strategy:
 
-                    1) pre-calculate which (subset of) object pixels the probe interacts with at each scan position. We call
-                        these ``obj_views``. Ensure that the order of stacking of these ``obj_views`` match with the order of
-                        stacking of the diffraction patterns.
+            1) pre-calculate which (subset of) object pixels the probe interacts with at each scan position. We call
+                these ``obj_views``. Ensure that the order of stacking of these ``obj_views`` match with the order of
+                stacking of the diffraction patterns.
 
-                    2) create a list :math:`[0,1,...,N-1]` where :math:`N` is the number of diffraction patterns. Randomly
-                        select minibatches from this list (without replacement), then use the corresponding ``obj_view`` and
-                        diffraction intensity for further calculation.
+            2) create a list :math:`[0,1,...,N-1]` where :math:`N` is the number of diffraction patterns. Randomly
+                select minibatches from this list (without replacement), then use the corresponding ``obj_view`` and
+                diffraction intensity for further calculation.
 
-                    3) Use the iterator framework from TensorFlow to generate these minibatches. Inconveniently, when we use
-                        iterators, the minbatches of ``obj_views`` and diffraction patterns thus generated are not stored in the
-                        memory---every time we access the iterator, we get a new minibatch. In other words, there is no
-                        temporary storage to store this intermediate information at every step. If we want to do finer analysis
-                        on  the minibatches, we might want this information. For this temporary storage, we can use a TensorFlow
-                        Variable object, and store the minibatch information in the variable using an assign operation. The
-                        values of TensorFlow variables change only when we use these assign operations. In effect,
-                        we only access the iterator when we assign the value to the variable. Otherwise, the value of the
-                        variable remains in memory, unconnected to the iterator. Thus the minibatch information is preserved
-                        until we use the assign operation again.
+            3) Use the iterator framework from TensorFlow to generate these minibatches. Inconveniently, when we use
+                iterators, the minbatches of ``obj_views`` and diffraction patterns thus generated are not stored in the
+                memory---every time we access the iterator, we get a new minibatch. In other words, there is no
+                temporary storage to store this intermediate information at every step. If we want to do finer analysis
+                on  the minibatches, we might want this information. For this temporary storage, we can use a TensorFlow
+                Variable object, and store the minibatch information in the variable using an assign operation. The
+                values of TensorFlow variables change only when we use these assign operations. In effect,
+                we only access the iterator when we assign the value to the variable. Otherwise, the value of the
+                variable remains in memory, unconnected to the iterator. Thus the minibatch information is preserved
+                until we use the assign operation again.
 
-                After generating a minibatch of ``obj_views``, we use the forward model to generate the predicted
-                diffraction patterns for the current object and probe guesses.
+        After generating a minibatch of ``obj_views``, we use the forward model to generate the predicted
+        diffraction patterns for the current object and probe guesses.
 
-                Parameters
-                ----------
-                batch_size : int
-                    Number of diffraction patterns in each minibatch.
+        Parameters
+        ----------
+        batch_size : int
+            Number of diffraction patterns in each minibatch.
         """
         all_indices_shuffled_t = tf.constant(np.random.permutation(self.n_all), dtype='int64')
         validation_indices_t = all_indices_shuffled_t[:self.n_validation]
@@ -201,11 +199,12 @@ class ReconstructionT(abc.ABC):
         train_iterate = self._getBatchedDataIterate(train_batch_size, train_indices_t)
         validation_iterate = self._getBatchedDataIterate(validation_batch_size, validation_indices_t)
 
-        self._batch_train_input_v = tf.Variable(tf.zeros(train_batch_size, dtype=tf.int64))
-        self._batch_validation_input_v = tf.Variable(tf.zeros(validation_batch_size, dtype=tf.int64))
+        with tf.device("/gpu:0"):
+            self._batch_train_input_v = tf.Variable(tf.zeros(train_batch_size, dtype=tf.int64))
+            self._batch_validation_input_v = tf.Variable(tf.zeros(validation_batch_size, dtype=tf.int64))
 
-        self._new_train_batch_op = self._batch_train_input_v.assign(train_iterate)
-        self._new_validation_batch_op = self._batch_validation_input_v.assign(validation_iterate)
+            self._new_train_batch_op = self._batch_train_input_v.assign(train_iterate)
+            self._new_validation_batch_op = self._batch_validation_input_v.assign(validation_iterate)
 
         self._iterations_per_epoch = self.n_train // train_batch_size
 
@@ -226,21 +225,30 @@ class ReconstructionT(abc.ABC):
         iterator = dataset_batch.make_one_shot_iterator()
         return iterator.get_next()
 
-    def addCustomMetricToDataLog(self, title: str, tensor: tf.Tensor, registration_ground_truth=None):
+    def addCustomMetricToDataLog(self, title: str,
+                                 tensor: tf.Tensor,
+                                 log_epoch_frequency: int = 1,
+                                 registration_ground_truth: np.ndarray =None):
         if registration_ground_truth is None:
-            self.datalog.addCustomTensorMetric(title=title, tensor=tensor)
+            self.datalog.addCustomTensorMetric(title=title, tensor=tensor, log_epoch_frequency=log_epoch_frequency)
         else:
-            self.datalog.addCustomTensorMetric(title=title, tensor=tensor, registration=True,
+            self.datalog.addCustomTensorMetric(title=title,
+                                               tensor=tensor,
+                                               registration=True,
+                                               log_epoch_frequency=log_epoch_frequency,
                                                true=registration_ground_truth)
 
     def finalizeSetup(self):
         self._checkAttr("optimizers", "finalize")
+        logger.info("finalizing the data logger.")
         self.datalog.finalize()
         with self.graph.as_default():
             config = tf.ConfigProto()
             config.gpu_options.allow_growth = True
+            logger.info("Initializing the session.")
             self.session = tf.Session(config=config)
             self.session.run(tf.global_variables_initializer())
+        logger.info("Finalized setup.")
 
     def _printDebugOutput(self, debug_output_epoch_frequency, epoch, print_debug_header):
         if not epoch % debug_output_epoch_frequency == 0:
@@ -288,7 +296,7 @@ class ReconstructionT(abc.ABC):
                 patience_increase_factor : float
                     Factor by which the patience is increased whenever the ``improvement`` is better than the
                     `improvement_threshold`.
-                max_iters : int
+                max_iterationss : int
                     Maximum number of ``iterations`` to perform. Each ``epoch`` is usually composed of multiple iterations.
                 debug_output : bool
                     Whether to print the validation log output to the screen.
@@ -307,7 +315,6 @@ class ReconstructionT(abc.ABC):
         for i in range(max_iterations):
             self.iteration += 1
             self.session.run(self._new_train_batch_op)
-
             min_ops = [self._train_loss_t]
             for o in self.optimizers:
                 if (o["initial_update_delay"] <= self.iteration) and (self.iteration % o["update_frequency"] == 0):
@@ -362,16 +369,21 @@ class ReconstructionT(abc.ABC):
         self._updateOutputs()
 
 
-    @abc.abstractmethod
     def _updateOutputs(self):
-        pass
+        if "obj" in self.fwd_model.model_vars:
+            self.obj.array = self.session.run(self.fwd_model.model_vars["obj"]["output"])
+        if "probe" in self.fwd_model.model_vars:
+            self.probe.wavefront = self.session.run(self.fwd_model.model_vars["probe"]["output"])
 
 
 
 
 
 class FarFieldGaussianReconstructionT(ReconstructionT):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: int,
+                 obj_array_true: np.ndarray = None,
+                 probe_wavefront_true: np.ndarray = None,
+                 **kwargs: int):
         logger.info('initializing...')
         super().__init__(*args, **kwargs)
 
@@ -382,14 +394,19 @@ class FarFieldGaussianReconstructionT(ReconstructionT):
         logger.info('creating optimizers...')
         self.attachOptimizerPerVariable("obj", optimizer_type="adam", optimizer_args = {"learning_rate":1e-2})
         self.attachOptimizerPerVariable("probe", optimizer_type="adam", optimizer_args={"learning_rate":1e-1},
-                                        initial_update_delay=100)
+                                        initial_update_delay=0)
 
+        if obj_array_true is not None:
+            self.addCustomMetricToDataLog(title="obj_error",
+                                          tensor=self.fwd_model.obj_cmplx_t,
+                                          log_epoch_frequency=10,
+                                          registration_ground_truth=obj_array_true)
+        if probe_wavefront_true is not None:
+            self.addCustomMetricToDataLog(title="probe_error",
+                                          tensor=self.fwd_model.probe_cmplx_t,
+                                          log_epoch_frequency=10,
+                                          registration_ground_truth=probe_wavefront_true)
 
-    def _updateOutputs(self):
-        obj_array, probe_wavefront = self.session.run([self.fwd_model.model_vars["obj"]["output"],
-                                                       self.fwd_model.model_vars["probe"]["output"]])
-        self.obj.array = obj_array
-        self.probe.wavefront = probe_wavefront
 
 
     def genPlotsRecons(self) -> None:
@@ -437,3 +454,54 @@ class FarFieldGaussianReconstructionT(ReconstructionT):
             obj_clipped_reshaped = tf.reshape(obj_clipped, [-1])
             clipped = tf.assign(self.tf_obj, obj_clipped_reshaped, name='clip_op')
         return clipped
+
+
+class NearFieldGaussianReconstructionT(ReconstructionT):
+    def __init__(self, propagation_dist: float, *args: int,
+                 obj_array_true: np.ndarray = None,
+                 probe_wavefront_true: np.ndarray = None,
+                 **kwargs):
+        logger.info('initializing...')
+        super().__init__(*args, **kwargs)
+        self.propagation_dist = propagation_dist
+
+        logger.info('attaching fwd model...')
+        self.attachForwardModel("nearfield", propagation_dist=self.propagation_dist)
+        logger.info('creating loss fn...')
+        self.attachLossFunction("least_squared")
+        logger.info('creating optimizers...')
+        self.attachOptimizerPerVariable("obj", optimizer_type="adam", optimizer_args = {"learning_rate":1e-2})
+        self.attachOptimizerPerVariable("probe", optimizer_type="adam", optimizer_args={"learning_rate":1e1},
+                                        initial_update_delay=0)
+
+        if obj_array_true is not None:
+            self.addCustomMetricToDataLog(title="obj_error",
+                                          tensor=self.fwd_model.obj_cmplx_t,
+                                          log_epoch_frequency=10,
+                                          registration_ground_truth=obj_array_true)
+        if probe_wavefront_true is not None:
+            self.addCustomMetricToDataLog(title="probe_error",
+                                          tensor=self.fwd_model.probe_cmplx_t,
+                                          log_epoch_frequency=10,
+                                          registration_ground_truth=probe_wavefront_true)
+
+
+class BraggPtychoReconstructionT(ReconstructionT):
+    def __init__(self, *args: int,
+                 obj_array_true: np.ndarray = None,
+                 **kwargs):
+        logger.info('initializing...')
+        super().__init__(*args, **kwargs)
+
+        logger.info('attaching fwd model...')
+        self.attachForwardModel("bragg")
+        logger.info('creating loss fn...')
+        self.attachLossFunction("least_squared")
+        logger.info('creating optimizers...')
+        self.attachOptimizerPerVariable("obj", optimizer_type="adam", optimizer_args = {"learning_rate":1e-2})
+
+        if obj_array_true is not None:
+            self.addCustomMetricToDataLog(title="obj_error",
+                                          tensor=self.fwd_model.obj_cmplx_t,
+                                          log_epoch_frequency=10,
+                                          registration_ground_truth=obj_array_true)

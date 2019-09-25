@@ -3,9 +3,9 @@
 
 
 import numpy as np
-from ptychoSampling import propagators, utils
+from ptychoSampling.utils import utils
 from ptychoSampling.wavefront import Wavefront
-from typing import Optional, List, Tuple, Union
+from typing import Optional, Tuple, Any
 import abc
 from ptychoSampling.logger import logger
 
@@ -18,10 +18,10 @@ class Probe(abc.ABC):
     ----------
     wavelength : float
         Wavelength of the probe wavefront.
-    pixel_size : tuple(float, float)
-        Pixel pitch at the sample plane.
-    shape: tuple(int, int)
-        Number of pixels in each side of the probe array.
+    pixel_size : tuple(float,...)
+        Pixel pitch at the sample plane [y, x] (in m).
+    shape: tuple(int,...)
+        Number of pixels in the [y, x] sides of the probe array.
     n_photons : float
         Total number of photons in the probe wavefront, at the sample plane.
     defocus_dist : float, optional
@@ -30,14 +30,14 @@ class Probe(abc.ABC):
         the square probe structure (exit wave from the aperture), and then use this `defocus_dist` parameter to
         propagate the wavefront to the sample plane. Default is set to 0 m.
     center_dist: tuple(float, float), optional
-        Displacement (along the x-axis and y-axis respectively) of the center of the probe wavefront from the center of
+        Displacement (along the y-axis and x-axis respectively) of the center of the probe wavefront from the center of
         the pixellation in the sample plane (in m). Defaults to :math:`(0,0)`.
     center_npix: tuple(int, int), optional
-        Displacement (along the x-axis and y-axis respectively) of the center of the probe wavefront from the center of
+        Displacement (along the y-axis and x-axis respectively) of the center of the probe wavefront from the center of
         the pixellation in the sample plane (in pixels). Converted to `center_dist` when necessary. Defaults to
         :math:`(0,0)`.
     width_dist: tuple(float, float), optional
-        Width of the probe along the x and y-axes (in m). This is used in the inherited subclasses. Default value is
+        Width of the probe along the y and x-axes (in m). This is used in the inherited subclasses. Default value is
         :math:`(0,0)`.
     width_npix: tuple(int, int), optional
         Width of the probe in pixels. This is converted to `width_dist` when necessary.
@@ -58,8 +58,8 @@ class Probe(abc.ABC):
     """
     def __init__(self,
                  wavelength: float,
-                 pixel_size: Tuple[float, float],
-                 shape: Tuple[int, int],
+                 pixel_size: Tuple[float, ...],
+                 shape: Tuple[int, ...],
                  n_photons: float,
                  defocus_dist: float = 0,
                  center_dist: Tuple[float,float] = (0,0),
@@ -170,10 +170,10 @@ class Probe(abc.ABC):
         nx = self.shape[-1]
         ny = self.shape[-2]
         #intensities = np.fft.ifftshift(np.abs(self.wavefront)**2)
-        intensities = self.wavefront.centered.intensities
-        x = np.arange(-nx // 2, nx // 2) * self.pixel_size[0]
-        y = np.arange(-ny // 2, ny // 2) * self.pixel_size[1]
-        xx, yy = np.meshgrid(x, y)
+        intensities = self.wavefront.fftshift.intensities
+        y = np.arange(-ny // 2, ny // 2) * self.pixel_size[0]
+        x = np.arange(-ny // 2, nx // 2) * self.pixel_size[1]
+        yy, xx = np.meshgrid(y, x)
         xdata = np.stack((xx.flatten(), yy.flatten()), axis=1)
         bounds_min = [0, x[0], y[0], 0, 0, -np.pi/4, 0]
         bounds_max = [intensities.sum(), x[-1], y[-1], x[-1] * 2, y[-1] * 2, np.pi/4, intensities.max()]
@@ -214,32 +214,26 @@ class Probe(abc.ABC):
             if hasattr(self, '_gaussian_fit'):
                 self._calculateGaussianFit()
 
-    def _checkPropGaussianFit(self) -> None:
+    def _checkPropGaussianFit(self) -> bool:
         """Experimental feature. To be used primarily for any debugging."""
+        from ptychoSampling.wavefront import  checkPropagationType
+
         logger.warn("the check for propagation type is an experimental feature.")
         self._calculateGaussianFit()
-        feature_size = np.max(self._gaussian_fwhm) * 2
-        support_size_x = self.shape[-1] * self.pixel_size[0]
-        support_size_y = self.shape[-2] * self.pixel_size[1]
+        feature_size = np.array(self._gaussian_fwhm) * 2
 
-        for s, p in zip([support_size_x, support_size_y], self.pixel_size):
-            propagation_type = propagators.checkPropagationType(wavelength=self.wavelength,
-                                                            prop_dist=self.defocus_dist,
-                                                            source_pixel_size=p,
-                                                            source_support_size=s,
-                                                            max_feature_size=feature_size)
-            if propagation_type == propagators.PropagationType.FARFIELD:
-                e = ValueError("Defocus distance too large. Only near field defocus supported.")
-                logger.error(e)
-                raise e
-            if propagation_type == propagators.PropagationType.UNSUPPORTED:
-                e = ValueError("Fresnel number too high. Cannot use Fresnel propagation.")
-                logger.error(e)
-                raise e
-            if propagation_type == propagators.PropagationType.IMPULSE_RESPONSE:
-                logger.warning("As a default the Probe class uses the transfer function method for defocus. The supplied "
-                            + "parameters indicate that the impulse response method is the preferred approach. "
-                            + "Consider using the impulse response method separately before creating the Probe class.")
+        propagation_type = checkPropagationType(wavelength=self.wavelength,
+                                                prop_dist=self.defocus_dist,
+                                                source_pixel_size=self.pixel_size,
+                                                max_feature_size=feature_size)
+        errors = {-1: "Propagation type is different along the x and y directions. This is not supported.",
+                  0: "Defocus distance is too small (Fresnel number too high) for transfer function method.",
+                  2: "Defocus distance too large. Only near field defocus supported."}
+        if propagation_type in errors:
+            e = ValueError(errors[propagation_type])
+            logger.error(e)
+            raise e
+        return True
 
 
 class CustomProbeFromArray(Probe):
@@ -284,13 +278,13 @@ class RectangleProbe(Probe):
 
     Parameters
     ----------
-    *args : List
+    *args : Any
         Parameters required to initialize a `Probe` object. Supplied to the parent `Probe` class.
     width_dist : tuple(float, float)
         Width of the rectangular aperture in the x and y directions respectively (in m).
     width_npix : tuple(int, int)
         Width of rectangular aperture in x and y directions (in pixel values).
-    **kwargs : dict
+    **kwargs : Any
         Optional arguments for a `Probe` object. Supplied to the parent `Probe` class.
     Attributes
     ----------
@@ -300,8 +294,8 @@ class RectangleProbe(Probe):
     --------
     Probe
     """
-    def __init__(self, *args: list,
-                **kwargs: dict):
+    def __init__(self, *args: Any,
+                **kwargs: Any):
         super().__init__(*args,
                          **kwargs)
         self._calculateWavefront()
@@ -311,10 +305,10 @@ class RectangleProbe(Probe):
         nx = self.shape[-1]
         ny = self.shape[-2]
 
-        x = np.arange(-nx // 2, nx // 2) * self.pixel_size[0]
-        y = np.arange(-ny // 2, ny // 2)[:, np.newaxis] * self.pixel_size[1]
-        xarr = np.where(np.abs(x - self.center_dist[0]) <= self.width_dist[0] / 2, 1, 0)
-        yarr = np.where(np.abs(y - self.center_dist[1]) <= self.width_dist[1] / 2, 1, 0)
+        x = np.arange(-nx // 2, nx // 2) * self.pixel_size[1]
+        y = np.arange(-ny // 2, ny // 2)[:, np.newaxis] * self.pixel_size[0]
+        xarr = np.where(np.abs(x - self.center_dist[1]) <= self.width_dist[1] / 2, 1, 0)
+        yarr = np.where(np.abs(y - self.center_dist[0]) <= self.width_dist[0] / 2, 1, 0)
         array = np.fft.fftshift((xarr * yarr).astype('complex64'))
 
         scaling_factor = np.sqrt(self.n_photons / (np.abs(array)**2).sum())
@@ -330,12 +324,12 @@ class EllipticalProbe(Probe):
         Parameters
         ----------
         width_dist : tuple(float, float)
-            Diameter (?) of the aperture in x and y directions respectively(in m).
+            Diameter (?) of the aperture in y and x directions respectively(in m).
         width_npix : tuple(int, int)
-            Diameter (?) of the aperture in x and y directions respectively (in pixels).
-        *args : List
+            Diameter (?) of the aperture in y and x directions respectively (in pixels).
+        *args : Any
             Parameters required to initialize a `Probe` object. Supplied to the parent `Probe` class.
-        **kwargs : dict
+        **kwargs : Any
             Optional arguments for a `Probe` object. Supplied to the parent `Probe` class.
 
         Attributes
@@ -348,7 +342,7 @@ class EllipticalProbe(Probe):
 
         Notes
         -----
-        If :math:`(2a, 2b)` is the `width_dist` parameter, then an ellipse is defined as:
+        If :math:`(2b, 2a)` is the `width_dist` parameter, then an ellipse is defined as:
 
         .. math:: \frac{x^2}{a^2} +
 
@@ -366,8 +360,8 @@ class EllipticalProbe(Probe):
         .. math:: x_1^2 + y_1^2 <= r^2
 
         """
-    def __init__(self, *args: List,
-                 **kwargs: dict):
+    def __init__(self, *args: Any,
+                 **kwargs: Any):
         super().__init__(*args,
                          **kwargs)
         self._calculateWavefront()
@@ -375,14 +369,14 @@ class EllipticalProbe(Probe):
     def _calculateWavefront(self):
         """Calculates and propagates the exit wave from a circular aperture of the supplied radius.
         """
-        a = self.width_dist[0] / 2
-        b = self.width_dist[1] / 2
+        a = self.width_dist[1] / 2
+        b = self.width_dist[0] / 2
         nx = self.shape[1]
         ny = self.shape[0]
-        x = np.arange(-nx// 2, nx// 2) * self.pixel_size[0]
-        y = np.arange(-ny// 2, ny// 2)[:, np.newaxis] * self.pixel_size[1]
+        x = np.arange(-nx// 2, nx// 2) * self.pixel_size[1]
+        y = np.arange(-ny// 2, ny// 2)[:, np.newaxis] * self.pixel_size[0]
 
-        lhs = b**2 * (x - self.center_dist[0])**2 + a**2 * (y - self.center_dist[1])**2
+        lhs = b**2 * (x - self.center_dist[1])**2 + a**2 * (y - self.center_dist[0])**2
         rhs = a**2 * b**2
 
         wavefront_array = np.zeros(lhs.shape, dtype='complex64')
@@ -404,15 +398,15 @@ class GaussianProbe(Probe):
     Parameters
     ----------
     width_dist : tuple(float, float)
-        Spread (standard deviation) of the gaussian in the x and y directions respectively(in m). Typically denoted
+        Spread (standard deviation) of the gaussian in the y and x directions respectively(in m). Typically denoted
         by *sigma* (:math:`\sigma`).
     width_npix : tuple(int, int)
         Same as `width_dist`, but in pixels.
     theta : float, optional
         Angle with which to clockwise rotate the primary axes of the 2d gaussian after generation.
-    *args : List
+    *args : Any
         Parameters required to initialize a `Probe` object. Supplied to the parent `Probe` class.
-    **kwargs : dict
+    **kwargs : Any
         Optional arguments for a `Probe` object. Supplied to the parent `Probe` class.
 
     Attributes
@@ -439,32 +433,32 @@ class GaussianProbe(Probe):
     .. [2] https://en.wikipedia.org/wiki/Gaussian_function#Two-dimensional_Gaussian_function
 
     """
-    def __init__(self, *args: List,
+    def __init__(self, *args: Any,
                  theta: float = 0,
-                 **kwargs: dict) -> None:
+                 **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.theta = theta
         self._calculateWavefront()
 
     def _calculateWavefront(self) -> None:
         """Calculate the probe wavefront with constant phase and with a gaussian intensity. Propagate the wavefront."""
-        sigma_x = self.width_dist[0]
-        sigma_y = self.width_dist[1]
+        sigma_x = self.width_dist[1]
+        sigma_y = self.width_dist[0]
 
         nx = self.shape[-1]
         ny = self.shape[-2]
-        x = np.arange(-nx // 2, nx // 2) * self.pixel_size[0]
-        y = np.arange(-ny // 2, ny // 2) * self.pixel_size[1]
+        x = np.arange(-nx // 2, nx // 2) * self.pixel_size[1]
+        y = np.arange(-ny // 2, ny // 2) * self.pixel_size[0]
         xx, yy = np.meshgrid(x, y)
         xdata = np.stack((xx.flatten(), yy.flatten()), axis=1)
         intensity = utils.generalized2dGaussian(xdata,
-                                               amplitude=1,
-                                               center_x=self.center_dist[0],
-                                               center_y=self.center_dist[1],
-                                               sigma_x = sigma_x,
-                                               sigma_y = sigma_y,
-                                               theta=self.theta,
-                                               offset=0).reshape((ny, nx))
+                                                amplitude=1,
+                                                center_x=self.center_dist[1],
+                                                center_y=self.center_dist[0],
+                                                sigma_x = sigma_x,
+                                                sigma_y = sigma_y,
+                                                theta=self.theta,
+                                                offset=0).reshape((ny, nx))
 
         scaling_factor = np.sqrt(self.n_photons / intensity.sum())
         wavefront_array = scaling_factor * np.sqrt(intensity).astype('complex64')
@@ -486,9 +480,9 @@ class GaussianSpeckledProbe(Probe):
     width_dist, width_npix, theta : see the documentation for the corresponding parameters in GaussianProbe.
     speckle_window_npix : int
         Aperture size used to generate a speckled pattern (in pixels).
-    *args : List
+    *args : Any
         Parameters required to initialize a `Probe` object. Supplied to the parent `Probe` class.
-    **kwargs : dict
+    **kwargs : Any
         Optional arguments for a `Probe` object. Supplied to the parent `Probe` class.
 
     Attributes
@@ -521,10 +515,10 @@ class GaussianSpeckledProbe(Probe):
     .. [4] Richard M. Clare, Marco Stockmar, Martin Dierolf, Irene Zanette, and Franz Pfeiffer,
         "Characterization of near-field ptychography," Opt. Express 23, 19728-19742 (2015)
     """
-    def __init__(self, *args: List,
+    def __init__(self, *args: Any,
                  speckle_window_npix: int,
                  theta: float = 0,
-                 **kwargs: dict) -> None:
+                 **kwargs: Any) -> None:
         super().__init__(*args,
                          **kwargs)
         self.speckle_window_npix = speckle_window_npix
@@ -533,13 +527,13 @@ class GaussianSpeckledProbe(Probe):
 
     def _calculateWavefront(self) -> None:
         """Calculate a wavefront with gaussian intensity, then modulate the wavefront using a speckle pattern."""
-        sigma_x = self.width_dist[0]
-        sigma_y = self.width_dist[1]
+        sigma_x = self.width_dist[1]
+        sigma_y = self.width_dist[0]
 
         nx = self.shape[-1]
         ny = self.shape[-2]
-        x = np.arange(-nx // 2, nx // 2) * self.pixel_size[0]
-        y = np.arange(-ny // 2, ny // 2) * self.pixel_size[1]
+        x = np.arange(-nx // 2, nx // 2) * self.pixel_size[1]
+        y = np.arange(-ny // 2, ny // 2) * self.pixel_size[0]
         xx, yy = np.meshgrid(x, y)
         intensity = utils.generalized2dGaussian(np.stack((xx.flatten(), yy.flatten()), axis=1),
                                                 amplitude=1,
@@ -618,9 +612,9 @@ class FocusCircularProbe(Probe):
     oversampling_npix : int
         Number of pixels in each side of the oversampled array. Default value is 1024. If
         :math:`\text{npix} > \text{oversampling_npix}`, then `oversampling_npix` is set to `npix`.
-    *args : List
+    *args : Any
         Parameters required to initialize a `Probe` object. Supplied to the parent `Probe` class.
-    **kwargs : dict
+    **kwargs : Any
         Optional arguments for a `Probe` object. Supplied to the parent `Probe` class.
 
     Attributes
@@ -642,12 +636,12 @@ class FocusCircularProbe(Probe):
         Allow for combinations of `focus_radius_npix` with either `focal_length` or `aperture_radius`.
 
     """
-    def __init__(self, *args: List,
+    def __init__(self, *args: Any,
                  focal_length: Optional[float] = None,
                  aperture_radius: Optional[float] = None,
                  oversampling: bool = True,
                  oversampling_npix: int = 1024,
-                 **kwargs: dict) -> None:
+                 **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         if ((self.width_dist[0] != self.width_dist[1])
                 or (self.pixel_size[0] != self.pixel_size[1])
@@ -710,4 +704,42 @@ class FocusCircularProbe(Probe):
         #self.wavefront = self.wavefront.update(array=wavefront_array)
         self.wavefront = Wavefront(wavefront_array, wavelength=self.wavelength, pixel_size=self.pixel_size)
         self._propagateWavefront()
+
+class Probe3D(Probe, abc.ABC):
+    """3D probe structure. For use in bragg ptychography experiments (etc).
+
+    .. todo::
+
+        Addressing 3D probe structures adequately is a lot harder than addressing 2D probe structures. For example,
+        we need to address:
+
+            * rotation and interpolation to generate probe structures (in the lab reference frame) at various angles of
+                incidence.
+            * the pixel sizes along the x, y, and z dimensions (in various reference frames). Even when
+                :math:`2\theta = 90^\circ`, I am not sure how to properly calculate the pixel size along the probe
+                propagation direction.
+
+        As a consequence, the approach here is very ad-hoc.
+    """
+    def __init__(self, wavelength: float,
+                 shape: Tuple[int, int, int],
+                 pixel_size: Tuple[float, float, float] = None,
+                 photons_flux: float = None):
+
+        super().__init__(wavelength=wavelength, shape=shape, pixel_size=pixel_size, n_photons=np.inf)
+        self.photons_flux = photons_flux
+
+
+class CustomProbe3DFromArray(Probe3D):
+    def __init__(self,
+                 array: np.ndarray,
+                 wavelength: float,
+                 pixel_size: Tuple[float, float, float] = None,
+                 photons_flux: float=None):
+        super().__init__(wavelength, array.shape, pixel_size, photons_flux)
+        self.wavefront = Wavefront(array, wavelength=wavelength)
+
+    def _calculateWavefront(self):
+        pass
+
 

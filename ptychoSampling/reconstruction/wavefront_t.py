@@ -3,10 +3,12 @@ import numpy as np
 from typing import Union, Tuple
 from ptychoSampling.logger import  logger
 
-def fftshift_t(t: tf.Tensor,
+def ununsed_fftshift_t(t: tf.Tensor,
                axes: Union[int, Tuple[int,...]] = (-1,-2),
                name: str = None):
-    """Shift the zero-frequency component to the center of the spectrum. (Adapted from tensflow 2.0 source code)
+    """ Does not work on the gpu!!
+
+    Shift the zero-frequency component to the center of the spectrum. (Adapted from tensflow 2.0 source code)
 
     This function swaps half-spaces for all axes listed (defaults to all).
     Note that ``y[0]`` is the Nyquist component only if ``len(x)`` is even.
@@ -40,8 +42,23 @@ def fftshift_t(t: tf.Tensor,
 
         return tf.roll(t, shift, axes)
 
+def batch_fftshift2d(tensor: tf.Tensor):
+    """Fftshift using split op. Only works for arrays with even number of elements in the last two axes."""
+    # Shifts high frequency elements into the center of the filter
+    indexes = len(tensor.get_shape()) - 1
+    top, bottom = tf.split(tensor, 2, axis=indexes)
+    tensor = tf.concat([bottom, top], indexes )
+    left, right = tf.split(tensor, 2, axis=indexes - 1)
+    tensor = tf.concat([right, left], indexes - 1 )
+    return tensor
 
-def ifftshift_t(t: tf.Tensor, axes=(-1,-2), name=None):
+def fftshift_t(tensor: tf.Tensor) -> tf.Tensor:
+    return batch_fftshift2d(tensor)
+
+def ifftshift_t(tensor: tf.Tensor) -> tf.Tensor:
+    return batch_fftshift2d(tensor)
+
+def unused_ifftshift_t(t: tf.Tensor, axes=(-1,-2), name=None):
     """The inverse of fftshift.
 
     Although identical for even-length x,
@@ -76,14 +93,14 @@ def ifftshift_t(t: tf.Tensor, axes=(-1,-2), name=None):
         return tf.roll(t, shift, axes)
 
 def fft2_t(t: tf.Tensor):
-    shape = t._shape_tuple()
-    norm = tf.sqrt(tf.cast(shape[-1] * shape[-2], 'complex64'))
-    return tf.fft2d(t) / tf.cast(norm, 'complex64')
+    shape = t.get_shape().as_list()
+    norm = (shape[-1] * shape[-2]) ** 0.5
+    return tf.fft2d(t) / norm
 
 def ifft2_t(t: tf.Tensor):
-    shape = t._shape_tuple()
-    norm = tf.sqrt(shape[-1] * shape[-2])
-    return tf.ifft2d(t) * tf.cast(norm, 'complex64')
+    shape = t.get_shape().as_list()
+    norm = (shape[-1] * shape[-2]) ** 0.5
+    return tf.ifft2d(t) * norm
 
 def propFF_t(t: tf.Tensor,
              apply_phase_factor: bool = False,
@@ -202,10 +219,11 @@ def propTF_t(t: tf.Tensor,
         rdy = wavelength * prop_dist / (ny * pixel_size[1])
 
         # reciprocal space coords
-        x = tf.range(-nx // 2, nx // 2) * rdx
-        y = tf.range(-ny // 2, ny // 2)[:, None] * rdy
+        x = tf.range(-nx // 2, nx // 2, dtype='float32') * rdx
+        y = tf.range(-ny // 2, ny // 2, dtype='float32')[:, None] * rdy
 
-        H = fftshift_t(tf.exp(-1j * k / (2 * prop_dist) * (x ** 2 + y ** 2)))
+        phase = - k / (2 * prop_dist) * (x ** 2 + y ** 2)
+        H = fftshift_t(tf.exp(1j * tf.cast(phase, 'complex64')))
         transfer_function = H
 
     if backward:

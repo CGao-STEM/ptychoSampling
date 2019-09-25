@@ -17,17 +17,17 @@ class ObjParams:
 class ProbeParams:
     n_photons: float = 1e8
     defocus_dist: float = 0.15
-    width_dist: Tuple = (7e-6, 7e-6) # x, y
+    width_dist: Tuple = (7e-6, 7e-6) # y, x
 
 @dt.dataclass
 class GridParams:
-    step_dist: Tuple = (3.5e-6, 3.5e-6) # x, y
+    step_dist: Tuple = (3.5e-6, 3.5e-6) # y, x
 
 @dt.dataclass
 class DetectorParams:
-    npix: int = 64
+    shape: Tuple[int,int] = (64, 64)
     obj_dist: float = 14.0
-    pixel_size: float = 55e-6
+    pixel_size: Tuple[float, float] = (55e-6, 55e-6) # y, x
 
 
 class Simulation:
@@ -59,12 +59,13 @@ class Simulation:
             self._detector_params = DetectorParams(**detector_params)
             self.detector = Detector(**dt.asdict(self._detector_params))
 
-        obj_pixel_size = (self.wavelength * self.detector.obj_dist / (self.detector.pixel_size * self.detector.npix
-                          * self.upsampling_factor))
-        probe_npix = self.detector.npix * self.upsampling_factor
+        detector_support_size = np.asarray(self.detector.pixel_size) * self.detector.shape
+        obj_pixel_size = self.wavelength * self.detector.obj_dist / (detector_support_size * self.upsampling_factor)
+
+        probe_shape = np.array(self.detector.shape) * self.upsampling_factor
 
         if obj is not None:
-            if obj.pixel_size is not None and obj.pixel_size != obj_pixel_size:
+            if obj.pixel_size is not None and np.any(obj.pixel_size != obj_pixel_size):
                 e = ValueError("Mismatch between the provided pixel size and the pixel size calculated from scan "
                                + "parameters.")
                 logger.error(e)
@@ -75,9 +76,9 @@ class Simulation:
             self.obj = Simulated2DObj(**dt.asdict(self._obj_params))
 
         if probe is not None:
-            check = ((probe.shape[0] != probe_npix)
+            check = (np.any(probe.shape != probe_shape)
                      or (probe.wavelength != self.wavelength)
-                     or (probe.pixel_size != obj_pixel_size))
+                     or np.any(probe.pixel_size != obj_pixel_size))
             if check:
                 e = ValueError("Supplied probe parameters do not match with supplied scan and detector parameters.")
                 logger.error(e)
@@ -86,8 +87,8 @@ class Simulation:
         else:
             self._probe_params = ProbeParams(**probe_params)
             self.probe = RectangleProbe(wavelength=wavelength,
-                                        pixel_size=(obj_pixel_size,obj_pixel_size),
-                                        shape=(probe_npix,probe_npix),
+                                        pixel_size=obj_pixel_size,
+                                        shape=probe_shape,
                                         **dt.asdict(self._probe_params))
 
         if scan_grid is not None:
@@ -96,7 +97,7 @@ class Simulation:
         else:
             self._scan_grid_params = GridParams(**scan_grid_params)
             self.scan_grid = RectangleGrid(obj_w_border_shape=self.obj.bordered_array.shape,
-                                           probe_npix=self.probe.shape[0],
+                                           probe_shape=self.probe.shape,
                                            obj_pixel_size=obj_pixel_size,
                                            **dt.asdict(self._scan_grid_params))
         self.scan_grid.checkOverlap()
@@ -106,11 +107,12 @@ class Simulation:
         wv = self.probe.wavefront.copy()#.array
         intensities_all = []
 
-        for i, (px, py) in enumerate(self.scan_grid.positions_pix):
+        for i, (py, px) in enumerate(self.scan_grid.positions_pix):
             if self.scan_grid.subpixel_scan:
-                u = np.fft.fftshift(np.arange(self.probe.shape[0]))
-                spx, spy = self.scan_grid.subpixel_scan[i]
-                phase_factor = (-2 * np.pi * (u * spx + u[:,None] * spy) / self.probe.shape[0])
+                uy = np.fft.fftshift(np.arange(self.probe.shape[0]))
+                ux = np.fft.fftshift(np.arange(self.probe.shape[1]))
+                spy, spx = self.scan_grid.subpixel_scan[i]
+                phase_factor = (-2 * np.pi * (ux * spx + uy[:,None] * spy) / self.probe.shape[0])
                 phase_ramp = np.complex(np.cos(phase_factor), np.sin(phase_factor))
                 wv = (self.probe.wavefront.fft2() * phase_ramp).ifft2()
                 #wv = np.fft.ifft2(np.fft.fft2(wv, norm='ortho') * phase_ramp, norm='ortho')

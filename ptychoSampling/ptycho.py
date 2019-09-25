@@ -4,13 +4,12 @@ import ptychoSampling.probe
 import ptychoSampling.obj
 import ptychoSampling.grid
 import ptychoSampling.detector
-from ptychoSampling.scan_data
-from ptychoSampling.propagators import Wavefront, propFF, propTF
-from ptychoSampling import utils
+from ptychoSampling.utils import utils
 from ptychoSampling.logger import logger
 
 
 class Ptychography(abc.ABC):
+    """This class is incomplete right now."""
     def __init__(self, probe: ptychoSampling.probe.Probe,
                  obj: ptychoSampling.obj.Obj,
                  scan_grid: ptychoSampling.grid.ScanGrid,

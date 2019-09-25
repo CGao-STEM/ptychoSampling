@@ -5,10 +5,25 @@ from typing import Tuple
 
 
 class Wavefront(np.ndarray):
-
+    """
+    Attributes
+    ----------
+    wavelength, pixel_size : See `Parameters`.
+    """
     def __new__(cls, input_array: np.ndarray,
                 wavelength: float=None,
                 pixel_size: Tuple[float,float]=None):
+        """
+        Parameters
+        ----------
+        input_array : array_like(complex)
+            Values with which we populate the wavefront.
+        wavelength : float
+            Wavelength (in m).
+        pixel_size : tuple(float, float)
+            Pixel size [y, x] (in m).
+
+        """
         # Input array is an already formed ndarray instance
         # We first cast to be our class type
         obj = np.asarray(input_array).view(cls)
@@ -46,8 +61,12 @@ class Wavefront(np.ndarray):
         return self.amplitude**2
 
     @property
-    def centered(self):
-        return Wavefront(np.fft.fftshift(self), pixel_size=self.pixel_size, wavelength=self.wavelength)
+    def fftshift(self):
+        return Wavefront(np.fft.fftshift(self, axes=(-1, -2)), pixel_size=self.pixel_size, wavelength=self.wavelength)
+
+    @property
+    def ifftshift(self):
+        return Wavefront(np.fft.ifftshift(self, axes=(-1, -2)), pixel_size=self.pixel_size, wavelength=self.wavelength)
 
     def propFF(self, apply_phase_factor: bool = False,
                prop_dist: float = None,
@@ -89,8 +108,8 @@ class Wavefront(np.ndarray):
 
 
         if None not in [prop_dist, self.wavelength, self.pixel_size]:
-            new_pixel_size = (self.wavelength * prop_dist / (nx * self.pixel_size[0]),
-                              self.wavelength * prop_dist / (ny * self.pixel_size[1]))
+            new_pixel_size = (self.wavelength * prop_dist / (ny * self.pixel_size[0]),
+                              self.wavelength * prop_dist / (nx * self.pixel_size[1]))
             #new_pixel_size = self.wavelength * prop_dist / (npix * self.pixel_size)
 
         if apply_phase_factor:
@@ -100,7 +119,7 @@ class Wavefront(np.ndarray):
                 k = 2 * np.pi / self.wavelength
 
                 # reciprocal space pixel size
-                rdx, rdy = self.pixel_size if backward else new_pixel_size
+                rdy, rdx = self.pixel_size if backward else new_pixel_size
 
                 # reciprocal space coordinates
                 x = np.arange(-nx // 2, nx // 2) * rdx
@@ -154,8 +173,8 @@ class Wavefront(np.ndarray):
             k = 2 * np.pi / self.wavelength
 
             # reciprocal space pixel size
-            rdx = self.wavelength * prop_dist / (nx * self.pixel_size[0])
-            rdy = self.wavelength * prop_dist / (ny * self.pixel_size[1])
+            rdy = self.wavelength * prop_dist / (ny * self.pixel_size[0])
+            rdx = self.wavelength * prop_dist / (nx * self.pixel_size[1])
 
             # reciprocal space coords
             x = np.arange(-nx // 2, nx // 2) * rdx
@@ -170,61 +189,7 @@ class Wavefront(np.ndarray):
             out = (transfer_function * self.fft2()).ifft2()
         return out
 
-    def propIR(self,
-               prop_dist: float = None,
-               reuse_transfer_function=False,
-               transfer_function=None) -> 'Wavefront':
-        """Propagation of the supplied wavefront using the Impulse Response function.
 
-        This function follows the convention of shifting array in real space before performing the Fourier transform.
-
-        Parameters
-        ----------
-        prop_dist : float
-            Propagation distance (in m).
-        reuse_transfer_function : bool
-            Whether to reuse the transfer function supplied through the `transfer_function` parameter. Default is `False`.
-            If set to `True`, then the transfer function must be supplied through the `transfer_function` parameter.
-        transfer_function: array_like(complex)
-            If supplied, then the function either either reuses or mutates (updates) this transfer function, depending on
-            the `reuse_transfer_function` parameter. Note that this should be provided without any fftshift
-
-        Returns
-        -------
-        wavefront_out : Wavefront
-            Output wavefront object. For near-field propagation, the pixel size remains the same.
-
-        .. todo::
-
-            Improve the error output.
-
-        """
-        logger.warning("I have not ever seen the impulse response method mentioned in x-ray imaging literature. "
-                       + "This is not in use in the ptychography simulations or in the reconstruction codes.")
-        ft = self.fft2()
-        nx = self.shape[-1]
-        ny = self.shape[-2]
-        if transfer_function is None:
-            transfer_function = np.zeros((ny, nx), dtype='complex64')
-        if not reuse_transfer_function:
-            k = 2 * np.pi / self.wavelength
-
-            # real space coordinates
-            x = np.arange(-nx // 2, nx // 2) * self.pixel_size[0]
-            y = np.arange(-ny // 2, ny // 2)[:, np.newaxis] * self.pixel_size[1]
-
-            # quadratic phase factor (or impulse)
-            h = np.exp(1j * k / (2 * prop_dist) * (x ** 2 + y ** 2))
-            H = np.fft.fft2(np.fft.fftshift(h), norm='ortho')
-
-            transfer_function[:] = H[:]
-        try:
-            out = (transfer_function * ft).ifft2()
-        except Exception as e:
-            e2 = ValueError('Invalid transfer function')
-            logger.error([e, e2])
-            raise e2 from e
-        return out
 
 
 def fft2(wv: Wavefront):
@@ -234,3 +199,65 @@ def fft2(wv: Wavefront):
 def ifft2(wv: Wavefront):
     out = np.fft.ifft2(wv, norm='ortho')
     return Wavefront(out, pixel_size=wv.pixel_size, wavelength=wv.wavelength)
+
+def checkPropagationType(wavelength: float,
+                         prop_dist: float,
+                         source_pixel_size: Tuple[float, float],
+                         max_feature_size: Tuple[float, float] = None):
+    """
+    Check the parameters to decide whether to use farfield, or transfer function.
+    This is an experimental feature.
+
+    Calculates the Fresnel number to decide whether to use nearfield or farfield propagation. Then,
+    for the near-field, we use the critical sampling criterion to decide whether to use the transfer function (TF)
+    method (if :math:`\Delta x > \lambda z/L`) [1]_.
+
+    Notes
+    -----
+    Following [1]_, we calculate the Fresnel number :math:`F_N = w^2/\lambda z`, where :math:`w` is the half-width of
+    the maximum feature size in the source plane (e.g the half-width of a square aperture, or the radius of a
+    circular aperture), :math:`\lambda` is the wavelength, and :math:`z` is the propagation distance. If
+    :math:`F_N < 0.1`, we can safely use the Fraunhofer (far-field) method, otherwise we need to use the
+    near-field method.
+
+    When the maximum feature size is not provided, the function uses a minimal estimate---twice the pixel size at the
+    source plane, or two pixels. This assumes that Fraunhofer propagation is the ost likely propagation method.
+
+
+    Parameters
+    ----------
+    wavelength : float
+        Wavelength of the source wavefront (in m).
+    prop_dist : float
+        Propagation distance (in m).
+    source_pixel_size : tuple(float, float)
+        Pixel pitch [y, x] (in m).
+    max_feature_size : tuple(float, float) optional
+        Maximum feature size [y, x] (e.g. diameter of a circular aperture) (in m) along the two coordinate axes. For
+        the default value (`None`), the function assumes that the features are two pixels wide, at maximum.
+    Returns
+    -------
+    out : int
+        Type of propagation. Returns `0` if the propagation distance is too small, with Fresnel number :math:`>50`. For
+        this case, the transfer function propagator does not apply, and thus the propagation is not supported.
+        Returns `1` if the Fresnel number is between :math:`0.1` and :math:`50`, in which case we can use the
+        transfer function method. Returns `2` if the Fresnel number is :math:`<0.1`, in which case we can use the
+        Fraunhofer propagation method. Returns `-1` if the propagation type is different for different axes.
+    References
+    ----------
+    .. [1] Voelz, D. "Computational Fourier Optics: A MATLAB Tutorial". doi:https://doi.org/10.1117/3.858456
+
+    """
+    max_feature_size = 2 * np.array(source_pixel_size) if max_feature_size is None else np.array(max_feature_size)
+    feature_half_width = max_feature_size / 2
+    fresnel_number = feature_half_width ** 2 / (wavelength * prop_dist)
+
+    if np.all(fresnel_number > 50):
+        prop_type = 0
+    elif np.all(fresnel_number > 0.1):
+        prop_type = 1
+    elif np.all(fresnel_number < 0.1):
+        prop_type = 2
+    else:
+        prop_type = -1
+    return prop_type

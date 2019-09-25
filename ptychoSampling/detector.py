@@ -1,8 +1,8 @@
-import numpy as np
+from typing import Tuple
 import dataclasses as dt
 
 @dt.dataclass(frozen=True)
 class Detector:
-    npix : int
-    pixel_size : float
+    shape : Tuple[int, int]
+    pixel_size : Tuple[float, float]
     obj_dist : float
