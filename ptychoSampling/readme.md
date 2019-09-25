@@ -1,10 +1,3 @@
-**Todo**:
-1. Actually clean up the farfield_poisson code
-2. Generalize the code so that it is adaptable for nearfield, farfield, and bragg cases. (This might be too difficult)
-
-**Notes**:
-1. The timings reported for the farfield ptychography code in the paper are from an earlier inefficient version of the code. The timings reported here are from a newer, much faster, version.
-
 ## Simulation notes:##
 
 **Nearfield ptychography experiment**:
@@ -26,8 +19,18 @@
 **Implementation notes**:
 
 1. As a default, the simulation code assumes that we can use Fraunhofer propagation for far-field propagation, and the 
-Fresnel Transfer Function method for the near-field propagation. While the *propagators.py* code also contains the impulse 
-response propagation method, it is not used anywhere else. The reconstruction code does not contain the impulse 
-response method.
-2. The far-field and near-field propagators need to be called explicitly. While *propagators.py* contains some checks
- to determine the propagation type, this is experimental and is not used anywhere else.
+Fresnel Transfer Function method for the near-field propagation. type, this is experimental and is not used anywhere else.
+
+**Other notes**:
+1. The documentation is rather sparse and sometimes incorrect.
+2. The examples need more explanation.
+
+**Todo**:
+1. Clean up and add code for the test cases, the timing benchmarks, and for the results reported  in the paper.
+2. Clean up documentation and verify everything works as intended.
+
+
+**Does not apply (for now)**:
+1. The timings reported for the farfield ptychography code in the paper are from an earlier
+ inefficient version of the code. The timings reported here are from a newer, much faster, version.
+ 
