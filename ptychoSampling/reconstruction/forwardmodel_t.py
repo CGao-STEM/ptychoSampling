@@ -32,17 +32,19 @@ class ForwardModelT(abc.ABC):
     def _addRealVariable(self, init: Union[float, np.ndarray],
                            name: str,
                            dtype: str='float32'):
-        var = tf.Variable(init, dtype=dtype, name=name)
+        var = tf.Variable(init.flat, dtype=dtype, name=name)
+        output = tf.reshape(var, init.shape)
         self.model_vars[name] = {"variable": var,
-                                 "output": var}
+                                 "output": output}
         return var
 
     def _addComplexVariable(self, init: Union[complex, np.ndarray],
                             name: str,
                             dtype: str = "float32" ):
-        init_reals = np.array([np.real(init), np.imag(init)])
+        init_reals = np.concatenate((np.real(init).flat, np.imag(init).flat))
         var = tf.Variable(init_reals, dtype=dtype, name=name)
-        output = tf.complex(var[0], var[1])
+        var_reshaped = tf.reshape(var, [2, *init.shape])
+        output = tf.complex(var_reshaped[0], var_reshaped[1])
         self.model_vars[name] = {"variable": var,
                                  "output": output}
 
@@ -134,8 +136,8 @@ class ForwardModelT(abc.ABC):
         obj_views_t = tf.complex(obj_real_pads_t, obj_imag_pads_t)
         return obj_views_t
 
-    def _downsample(self, diffs_t: tf.Tensor) -> tf.Tensor:
-
+    def _downsample(self, amplitudes_t: tf.Tensor) -> tf.Tensor:
+        diffs_t = amplitudes_t ** 2
         px = self.probe_cmplx_t.get_shape().as_list()[-1]
         py = self.probe_cmplx_t.get_shape().as_list()[-2]
         u = self.upsampling_factor
@@ -143,7 +145,7 @@ class ForwardModelT(abc.ABC):
         py_new = py // u
         diffs_t = tf.reshape(diffs_t, [-1, px_new, u, py_new, u])
         diffs_t = tf.reduce_sum(diffs_t, axis=(-1, -3))
-        return diffs_t
+        return diffs_t ** 0.5
 
 
     @abc.abstractmethod
@@ -156,7 +158,6 @@ class FarfieldForwardModelT(ForwardModelT):
 
         ndiffs = position_indices_t.get_shape().as_list()[0]
 
-
         if ndiffs == 0:
             return tf.zeros(shape=[], dtype='float32')
 
@@ -164,9 +165,10 @@ class FarfieldForwardModelT(ForwardModelT):
         batch_obj_views_t = fftshift_t(batch_obj_views_t)
         exit_waves_t = batch_obj_views_t * self.probe_cmplx_t
         out_wavefronts_t = propFF_t(exit_waves_t)
-        guess_diffs_t = tf.abs(out_wavefronts_t) ** 2
-        guess_diffs_t = self._downsample(guess_diffs_t) if self.upsampling_factor > 1 else guess_diffs_t
-        return guess_diffs_t
+        amplitudes_t = tf.abs(out_wavefronts_t)
+        if self.upsampling_factor > 1:
+            amplitudes_t = self._downsample(amplitudes_t)
+        return amplitudes_t
 
 class NearfieldForwardModelT(ForwardModelT):
     def __init__(self, obj: Obj,
@@ -196,9 +198,10 @@ class NearfieldForwardModelT(ForwardModelT):
         out_wavefronts_t = propTF_t(exit_waves_t,
                                     reuse_transfer_function=True,
                                     transfer_function=self._transfer_function)
-        guess_diffs_t = tf.abs(out_wavefronts_t)**2
-        guess_diffs_t = self._downsample(guess_diffs_t) if self.upsampling_factor > 1 else guess_diffs_t
-        return guess_diffs_t
+        amplitudes_t = tf.abs(out_wavefronts_t)
+        if self.upsampling_factor > 1:
+            amplitudes_t = self._downsample(amplitudes_t)
+        return amplitudes_t
 
 
 class BraggPtychoForwardModelT(ForwardModelT):
@@ -235,19 +238,19 @@ class BraggPtychoForwardModelT(ForwardModelT):
         if ndiffs == 0:
             return tf.zeros(shape=[], dtype='float32')
 
-        with tf.device("/gpu:0"):
-            batch_rc_positions_indices = tf.gather(self._full_rc_positions_indices_t, position_indices_t)
-            batch_obj_views_t = tf.gather(self._obj_views_all_t, batch_rc_positions_indices[:, 1])
-            batch_phase_modulations_t = tf.gather(self._probe_phase_modulations_all_t, batch_rc_positions_indices[:, 0])
+        batch_rc_positions_indices = tf.gather(self._full_rc_positions_indices_t, position_indices_t)
+        batch_obj_views_t = tf.gather(self._obj_views_all_t, batch_rc_positions_indices[:, 1])
+        batch_phase_modulations_t = tf.gather(self._probe_phase_modulations_all_t, batch_rc_positions_indices[:, 0])
 
-            batch_obj_views_t = batch_obj_views_t
-            exit_waves_t = batch_obj_views_t * self.probe_cmplx_t * batch_phase_modulations_t
-            exit_waves_proj_t = fftshift_t(tf.reduce_sum(exit_waves_t, axis=-3))
+        batch_obj_views_t = batch_obj_views_t
+        exit_waves_t = batch_obj_views_t * self.probe_cmplx_t * batch_phase_modulations_t
+        exit_waves_proj_t = fftshift_t(tf.reduce_sum(exit_waves_t, axis=-3))
 
-            out_wavefronts_t = propFF_t(exit_waves_proj_t)
-            guess_diffs_t = tf.abs(out_wavefronts_t) ** 2
-            guess_diffs_t = self._downsample(guess_diffs_t) if self.upsampling_factor > 1 else guess_diffs_t
-        return guess_diffs_t
+        out_wavefronts_t = propFF_t(exit_waves_proj_t)
+        amplitudes_t = tf.abs(out_wavefronts_t)
+        if self.upsampling_factor > 1:
+            amplitudes_t = self._downsample(amplitudes_t)
+        return amplitudes_t
 
     def _genViewIndices(self, scan_positions_pix: np.ndarray):
         """ Generate the indices...

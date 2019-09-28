@@ -1,5 +1,4 @@
 import numpy as np
-import abc
 import tensorflow as tf
 import ptychoSampling.probe
 import ptychoSampling.obj
@@ -7,7 +6,13 @@ import ptychoSampling.grid
 from ptychoSampling.logger import logger
 import ptychoSampling.reconstruction.options
 from ptychoSampling.reconstruction.datalogs_t import DataLogs
+from ptychoSampling.reconstruction.forwardmodel_t import ForwardModelT
+from ptychoSampling.reconstruction.optimization_t import  Optimizer
+from typing import Callable, TypeVar
 import copy
+
+OptimizerType = TypeVar("OptimizerType", bound=Optimizer)
+ForwardModelType = TypeVar("ForwardModelType", bound=ForwardModelT)
 
 class ReconstructionT:
     r"""
@@ -22,9 +27,9 @@ class ReconstructionT:
         self.obj = copy.deepcopy(obj)
         self.probe = copy.deepcopy(probe)
         self.grid = copy.deepcopy(grid)
-        self.intensities = copy.deepcopy(intensities)
+        self.amplitudes = intensities ** 0.5
 
-        self.n_all = self.intensities.shape[0]
+        self.n_all = self.amplitudes.shape[0]
         self.n_validation = n_validation
         self.n_train = self.n_all - self.n_validation
         self.batch_size = batch_size
@@ -32,7 +37,7 @@ class ReconstructionT:
         self.graph = tf.Graph()
         with self.graph.as_default():
             with tf.device("/gpu:0"):
-                self._intensities_t = tf.constant(intensities, dtype=tf.float32)
+                self._amplitudes_t = tf.constant(self.amplitudes, dtype=tf.float32)
             logger.info('creating batches...')
             self._createDataBatches()
 
@@ -56,88 +61,104 @@ class ReconstructionT:
     def attachForwardModel(self, model_type: str, **kwargs: float):
         models_all =  ptychoSampling.reconstruction.options.OPTIONS["forward models"]
         self._checkConfigProperty(models_all, model_type)
-        self._model_type = model_type
+        self._attachCustomForwardModel(models_all[model_type], **kwargs)
 
+
+    def _attachCustomForwardModel(self, model: TypeVar[ForwardModelType],
+                                  **kwargs):
         with self.graph.as_default():
-            self.fwd_model = models_all[model_type](self.obj, self.probe, self.grid, **kwargs)
+            self.fwd_model = model(self.obj, self.probe, self.grid, **kwargs)
 
-    def attachLossFunction(self, loss_type: str, amplitude_loss: bool = True):
+    def attachLossFunction(self, loss_type: str, map_preds_fn: Callable = None):
         losses_all = ptychoSampling.reconstruction.options.OPTIONS["loss functions"]
-        self._checkAttr("fwd_model", "loss functions")
+
         self._checkConfigProperty(losses_all, loss_type)
+        self._checkAttr("fwd_model", "loss functions")
+        self._attachCustomLossFunction(losses_all[loss_type], map_preds_fn)
 
-        self._loss_type = loss_type
-        self._amplitude_loss = amplitude_loss
+    def _attachModelPredictions(self, map_preds_fn: Callable = None):
 
-        power = 0.5 if amplitude_loss else 1.0
-
+        if map_preds_fn is None:
+            map_preds_fn = lambda x: x
         with self.graph.as_default():
-            self._batch_train_predictions_t = self.fwd_model.predict(self._batch_train_input_v) ** power
-            self._batch_validation_predictions_t = self.fwd_model.predict(self._batch_validation_input_v) ** power
+            self._batch_train_predictions_t = map_preds_fn(self.fwd_model.predict(self._batch_train_input_v))
+            self._batch_validation_predictions_t = map_preds_fn(self.fwd_model.predict(self._batch_validation_input_v))
 
-            self._batch_train_data_t = tf.gather(self._intensities_t, self._batch_train_input_v) ** power
-            self._batch_validation_data_t = tf.gather(self._intensities_t, self._batch_validation_input_v) ** power
+            self._batch_train_data_t = map_preds_fn(tf.gather(self._amplitudes_t, self._batch_train_input_v))
+            self._batch_validation_data_t = map_preds_fn(tf.gather(self._amplitudes_t, self._batch_validation_input_v))
 
-            #if amplitude_loss:
-            #    for t in [self._batch_train_predictions_t,
-            #              self._batch_validation_predictions_t,
-            #              self._batch_train_data_t,
-            #              self._batch_validation_data_t]:
-            #       t = tf.sqrt(t)
 
-            self._train_loss_t = losses_all[loss_type](self._batch_train_predictions_t, self._batch_train_data_t)
-            self._validation_loss_t = losses_all[loss_type](self._batch_validation_predictions_t,
-                                                            self._batch_validation_data_t)
+    def _attachCustomLossFunction(self, loss_fn: Callable,
+                                  map_preds_fn: Callable = None):
+        self._attachModelPredictions(map_preds_fn)
+        with self.graph.as_default():
+            self._train_loss_t = loss_fn(self._batch_train_predictions_t, self._batch_train_data_t)
+            self._validation_loss_t = loss_fn(self._batch_validation_predictions_t, self._batch_validation_data_t)
+
 
 
     def attachOptimizerPerVariable(self, variable_name: str,
                                    optimizer_type: str,
-                                   optimizer_args: dict,
+                                   optimizer_init_args: dict = None,
+                                   optimizer_minimize_args: dict = None,
                                    initial_update_delay: int = 0,
                                    update_frequency: int = 1,
                                    checkpoint_frequency: int = 100):
+        """Attach an optimizer for the specified variable.
+
+        Parameters
+        ----------
+        variable_name : str
+            Name (string) associated with the chosen variable (to be optimized) in the forward model.
+        optimizer_type : str
+            Name of the standard optimizer chosen from availabe options in options.Options.
+        optimizer_init_args : dict
+            Dictionary containing the key-value pairs required for the initialization of the desired optimizer.
+        optimizer_minimize_args : dict
+            Dictionary containing the key-value pairs required to define the minimize operation for the desired
+            optimizer.
+        initial_update_delay : int
+            Number of iterations to wait before the minimizer is first applied. Defaults to 0.
+        update_frequency : int
+            Number of iterations in between minimization calls. Defaults to 1.
+        checkpoint_frequency : int
+            Number of iterations between creation of checkpoints of the optimizer. Not implemented.
         """
-       Set up the training and validation loss functions and the probe and object optimization procedure.
-
-       For the training data, we use the loss value for the current minibatch of scan positions. We then try to
-       minimize this loss value by using the Adam optimizer for the object (and probe) variables.
-
-       For the validation data, we use the entire validation data set to calculate the loss value. We do not use
-       this for the gradient calculations.
-
-       For now, we use the amplitude loss function.
-
-       Parameters
-       ----------
-       obj_learning_rate : float
-           Learning rate (or initial step size) for the Adam optimizer for the object variable. Defaults to 0.01.
-       probe_learning_rate : float
-           Learning rate (or initial step size) for the Adam optimizer for the probe variable. Only applies we
-           enable probe reconstruction. Defaults to 10.
-        """
-        self._checkAttr("fwd_model", "optimizers")
+        optimization_all = ptychoSampling.reconstruction.options.OPTIONS["optimization_methods"]
+        self._checkConfigProperty(optimization_all, optimizer_type)
+        self._checkAttr("_train_loss_t", "optimizer")
         if variable_name not in self.fwd_model.model_vars:
             e = ValueError(f"{variable_name} is not a supported variable in {self.fwd_model}")
             logger.error(e)
             raise e
 
-        optimization_all = ptychoSampling.reconstruction.options.OPTIONS["optimization_methods"]
-        self._checkAttr("_train_loss_t", "optimizer")
-        self._checkConfigProperty(optimization_all, optimizer_type)
+        var = self.fwd_model.model_vars[variable_name]["variable"]
+        self._attachCustomOptimizerPerVariable(var,
+                                               optimization_all[optimizer_type],
+                                               optimizer_init_args,
+                                               optimizer_minimize_args,
+                                               initial_update_delay,
+                                               update_frequency)
+
+    def _attachCustomOptimizerPerVariable(self, var: tf.Variable,
+                                          optimize_method: TypeVar[OptimizerType],
+                                          optimizer_init_args: dict = None,
+                                          optimizer_minimize_args: dict = None,
+                                          initial_update_delay: int = 0,
+                                          update_frequency: int = 0):
+
+        if optimizer_minimize_args is None:
+            optimizer_minimize_args = {"loss":self._train_loss_t,
+                                       "var_list": [var]}
 
         if not hasattr(self, "optimizers"):
             self.optimizers = []
         with self.graph.as_default():
-            optimizer = optimization_all[optimizer_type](**optimizer_args)
-            minimize_op = optimizer.minimize(self._train_loss_t,
-                                             var_list=[self.fwd_model.model_vars[variable_name]["variable"]])
-        self.optimizers.append({"var": variable_name,
-                                "optimizer": optimizer,
-                                "minimize_op": minimize_op,
-                                "initial_update_delay": initial_update_delay,
-                                "update_frequency": update_frequency})
-
-
+            optimizer = optimize_method(optimizer_init_args,
+                                        optimizer_minimize_args,
+                                        initial_update_delay,
+                                        update_frequency)
+        self.optimizers.append(optimizer)
 
     def _checkAttr(self, attr_to_check, attr_this):
         if not hasattr(self, attr_to_check):
@@ -145,7 +166,8 @@ class ReconstructionT:
             logger.error(e)
             raise e
 
-    def _checkConfigProperty(self, options: dict, key_to_check: str):
+    @staticmethod
+    def _checkConfigProperty(options: dict, key_to_check: str):
         if key_to_check not in options:
             e = ValueError(f"{key_to_check} is not currently supported. "
                            + f"Check if {key_to_check} exists as an option among {options} in options.py")
@@ -155,6 +177,8 @@ class ReconstructionT:
     def _createDataBatches(self):
         """Use TensorFlow Datasets to create minibatches.
 
+        Notes
+        -----
         When the diffraction data set is small enough to easily fit in the GPU memory, we can use the minibatch
         strategy detailed here to avoid I/O bottlenecks. For larger datasets, we have to adopt a slightly different
         minibatching strategy. More information about minibatches vs timing will be added later on in jupyter notebooks.
@@ -183,11 +207,6 @@ class ReconstructionT:
 
         After generating a minibatch of ``obj_views``, we use the forward model to generate the predicted
         diffraction patterns for the current object and probe guesses.
-
-        Parameters
-        ----------
-        batch_size : int
-            Number of diffraction patterns in each minibatch.
         """
         all_indices_shuffled_t = tf.constant(np.random.permutation(self.n_all), dtype='int64')
         validation_indices_t = all_indices_shuffled_t[:self.n_validation]
@@ -265,45 +284,45 @@ class ReconstructionT:
             debug_output_epoch_frequency: int = 10):
         """Perform the optimization a specified number of times (with early stopping).
 
-                This command provides fine control over the number of times we run the minization procedure and over the
-                early stopping criterion. To understand how this works, we first introduce some terminology:
-                    - ``iteration``: Every minibatch update counts as one iteration.
-                    - ``epoch``: A single pass through the entire data set counts as one epoch. In the minibatch setting,
-                            each epoch usually consists of multiple iterations.
-                    - ``patience``: When there is no improvement in the minimum loss value obtained after an epoch of
-                            optimization, we can either pull the trigger immediately, or wait for a fixed number of epochs
-                            (without improvement) before pulling the trigger. This fixed number of epochs where we wait,
-                            even when we see no improvement, is the patience.
-                    - ``patience_increase_factor``: Typically, during the optimization procedure, we expect a fast
-                            improvement in the loss value at the beginning of the optimization procedure, with the rate of
-                            improvement slowing down as we proceed with the optimization. To account for this, we want an
-                            early stopping procedure with low patience at the beginning, and with increasing patience as we
-                            move towards the minimum. The `patience_increase_factor` controls the rate of increase of the
-                            patience (which depends on the `validation_frequency` parameter).
+        Notes
+        -----
+        This command provides fine control over the number of times we run the minization procedure and over the
+        early stopping criterion. To understand how this works, we first introduce some terminology:
+            - ``iteration``: Every minibatch update counts as one iteration.
+            - ``epoch``: A single pass through the entire data set counts as one epoch. In the minibatch setting,
+                    each epoch usually consists of multiple iterations.
+            - ``patience``: When there is no improvement in the minimum loss value obtained after an epoch of
+                    optimization, we can either pull the trigger immediately, or wait for a fixed number of epochs
+                    (without improvement) before pulling the trigger. This fixed number of epochs where we wait,
+                    even when we see no improvement, is the patience.
+            - ``patience_increase_factor``: Typically, during the optimization procedure, we expect a fast
+                    improvement in the loss value at the beginning of the optimization procedure, with the rate of
+                    improvement slowing down as we proceed with the optimization. To account for this, we want an
+                    early stopping procedure with low patience at the beginning, and with increasing patience as we
+                    move towards the minimum. The `patience_increase_factor` controls the rate of increase of the
+                    patience (which depends on the `validation_frequency` parameter).
 
-                Parameters
-                ----------
-                validation_frequency : int
-                    Number of epochs between each calculation of the validation loss. This is also the number of epochs
-                    between each check (and update) of the `patience` parameter.
-                improvement_threshold : float
-                    Relative tolerance for ``improvement`` of the minimum loss value, where ``improvement`` is defined as
-                    ``improvement = abs(validation_best_loss - validation_loss) / validation_best_loss``.
-                patience : int
-                    Minimum allowable number of epochs betweeen improvement in the minimum loss value, where the
-                    ``improvement`` is as defined by `improvement_threshold`. The `patience` is increased dynamically (
-                    depending on the `patience_increase_factor` and the `validation_frequency`)  during the optimization procedure.
-                patience_increase_factor : float
-                    Factor by which the patience is increased whenever the ``improvement`` is better than the
-                    `improvement_threshold`.
-                max_iterationss : int
-                    Maximum number of ``iterations`` to perform. Each ``epoch`` is usually composed of multiple iterations.
-                debug_output : bool
-                    Whether to print the validation log output to the screen.
-                debug_output_frequency : int
-                    Number of validation updates after which we print the validation log output to the screen.
-                probe_fixed_epochs : int
-                    Number of epochs (at the beginning) where we only adjust the object variable.
+        Parameters
+        ----------
+        max_iterations : int
+            Maximum number of iterations. Each ``epoch`` typically consists of multiple iterations.
+        validation_epoch_frequency : int
+            Number of epochs between each calculation of the validation loss. This is also the number of epochs
+            between each check (and update) of the `patience` parameter.
+        improvement_threshold : float
+            Relative tolerance for ``improvement`` of the minimum loss value, where ``improvement`` is defined as
+            ``improvement = abs(validation_best_loss - validation_loss) / validation_best_loss``.
+        patience_epoch : int
+            Minimum allowable number of epochs between improvement in the minimum loss value, where the
+            ``improvement`` is as defined by `improvement_threshold`. The `patience` is increased dynamically (
+            depending on the `patience_increase_factor` and the `validation_frequency`)  during the optimization procedure.
+        patience_increase_factor : float
+            Factor by which the patience is increased whenever the ``improvement`` is better than the
+            `improvement_threshold`.
+        debug_output : bool
+            Whether to print the log output to the screen.
+        debug_output_epoch_frequency : int
+            Number of epochs after which we print the log output to the screen.
         """
 
         if not hasattr(self, "session"):
@@ -317,8 +336,8 @@ class ReconstructionT:
             self.session.run(self._new_train_batch_op)
             min_ops = [self._train_loss_t]
             for o in self.optimizers:
-                if (o["initial_update_delay"] <= self.iteration) and (self.iteration % o["update_frequency"] == 0):
-                    min_ops.append(o["minimize_op"])
+                if (o.initial_update_delay <= self.iteration) and (self.iteration % o.update_frequency == 0):
+                    min_ops.append(o.minimize_op)
             outs = self.session.run(min_ops)
 
             self._default_log_items["epoch"] = self.epoch
@@ -376,9 +395,6 @@ class ReconstructionT:
             self.probe.wavefront = self.session.run(self.fwd_model.model_vars["probe"]["output"])
 
 
-
-
-
 class FarFieldGaussianReconstructionT(ReconstructionT):
     def __init__(self, *args: int,
                  obj_array_true: np.ndarray = None,
@@ -392,8 +408,12 @@ class FarFieldGaussianReconstructionT(ReconstructionT):
         logger.info('creating loss fn...')
         self.attachLossFunction("least_squared")
         logger.info('creating optimizers...')
-        self.attachOptimizerPerVariable("obj", optimizer_type="adam", optimizer_args = {"learning_rate":1e-2})
-        self.attachOptimizerPerVariable("probe", optimizer_type="adam", optimizer_args={"learning_rate":1e-1},
+        self.attachOptimizerPerVariable("obj",
+                                        optimizer_type="adam",
+                                        optimizer_init_args = {"learning_rate":1e-2})
+        self.attachOptimizerPerVariable("probe",
+                                        optimizer_type="adam",
+                                        optimizer_init_args={"learning_rate":1e-1},
                                         initial_update_delay=0)
 
         if obj_array_true is not None:
@@ -470,8 +490,11 @@ class NearFieldGaussianReconstructionT(ReconstructionT):
         logger.info('creating loss fn...')
         self.attachLossFunction("least_squared")
         logger.info('creating optimizers...')
-        self.attachOptimizerPerVariable("obj", optimizer_type="adam", optimizer_args = {"learning_rate":1e-2})
-        self.attachOptimizerPerVariable("probe", optimizer_type="adam", optimizer_args={"learning_rate":1e1},
+        self.attachOptimizerPerVariable("obj",
+                                        optimizer_type="adam",
+                                        optimizer_init_args = {"learning_rate":1e-2})
+        self.attachOptimizerPerVariable("probe", optimizer_type="adam",
+                                        optimizer_init_args={"learning_rate":1e1},
                                         initial_update_delay=0)
 
         if obj_array_true is not None:
@@ -498,7 +521,9 @@ class BraggPtychoReconstructionT(ReconstructionT):
         logger.info('creating loss fn...')
         self.attachLossFunction("least_squared")
         logger.info('creating optimizers...')
-        self.attachOptimizerPerVariable("obj", optimizer_type="adam", optimizer_args = {"learning_rate":1e-2})
+        self.attachOptimizerPerVariable("obj",
+                                        optimizer_type="adam",
+                                        optimizer_init_args = {"learning_rate":1e-2})
 
         if obj_array_true is not None:
             self.addCustomMetricToDataLog(title="obj_error",

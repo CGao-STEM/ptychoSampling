@@ -14,3 +14,6 @@
 **Notes**:
 1. For ease of application, the forward model simulation code uses numpy. Only the reconstruction code uses
  Tensorflow.  
+ 
+ 2. Uses Tensorflow 1.14 for now. In the future, I am planning on switching away from the static computational graphs
+  to a dynamic framework (Tensorflow 2.0, Pytorch, Autograd, Jax, etc) for ease of usage.  
